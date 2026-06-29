@@ -458,9 +458,13 @@ fn process_mooncake_trace_expands_and_duplicates_hash_space() -> anyhow::Result<
         512,
         2,
         2,
-        2,
+        1000,
         42,
     )?;
+    assert!(
+        traces.iter().all(|trace| !trace.sessions.is_empty()),
+        "empty worker partitions should be filtered"
+    );
 
     let mut all_hashes: Vec<Vec<u64>> = traces
         .into_iter()
