@@ -48,10 +48,19 @@ pub(super) async fn query_tiered_matches(
     block_size: u32,
     block_hashes: Vec<LocalBlockHash>,
     retain_block_hashes: bool,
+    gms_content_hashes_hex: Option<&[String]>,
 ) -> Result<TieredLookupResult, KvRouterError> {
     if retain_block_hashes {
         let (tiered_matches, shared_cache_hits, indexer_duration, shared_cache_duration) =
-            query_retained(indexer, shared_cache, tokens, block_size, &block_hashes).await?;
+            query_retained(
+                indexer,
+                shared_cache,
+                tokens,
+                block_size,
+                &block_hashes,
+                gms_content_hashes_hex,
+            )
+            .await?;
 
         return Ok(TieredLookupResult {
             tiered_matches,
@@ -62,8 +71,15 @@ pub(super) async fn query_tiered_matches(
         });
     }
 
-    let (tiered_matches, shared_cache_hits, indexer_duration, shared_cache_duration) =
-        query_owned(indexer, shared_cache, tokens, block_size, block_hashes).await?;
+    let (tiered_matches, shared_cache_hits, indexer_duration, shared_cache_duration) = query_owned(
+        indexer,
+        shared_cache,
+        tokens,
+        block_size,
+        block_hashes,
+        gms_content_hashes_hex,
+    )
+    .await?;
 
     Ok(TieredLookupResult {
         tiered_matches,
@@ -80,6 +96,7 @@ async fn query_retained(
     tokens: &[u32],
     block_size: u32,
     block_hashes: &[LocalBlockHash],
+    gms_content_hashes_hex: Option<&[String]>,
 ) -> Result<
     (
         TieredMatchDetails,
@@ -89,18 +106,25 @@ async fn query_retained(
     ),
     KvRouterError,
 > {
+    let indexer_fut = async move {
+        if let Some(gms_content_hashes_hex) = gms_content_hashes_hex {
+            indexer
+                .find_matches_by_tier_with_gms_placements(
+                    block_hashes.to_vec(),
+                    Some(gms_content_hashes_hex),
+                )
+                .await
+        } else {
+            indexer.find_matches_by_tier_ref(block_hashes).await
+        }
+    }
+    .instrument(tracing::info_span!("kv_router.find_matches"));
+
     let Some(shared_cache) = shared_cache else {
         let t = Instant::now();
-        let tiered = indexer
-            .find_matches_by_tier_ref(block_hashes)
-            .instrument(tracing::info_span!("kv_router.find_matches"))
-            .await?;
+        let tiered = indexer_fut.await?;
         return Ok((tiered, None, t.elapsed(), None));
     };
-
-    let indexer_fut = indexer
-        .find_matches_by_tier_ref(block_hashes)
-        .instrument(tracing::info_span!("kv_router.find_matches"));
     join_indexer_and_shared_cache(indexer_fut, shared_cache, tokens, block_size).await
 }
 
@@ -110,6 +134,7 @@ async fn query_owned(
     tokens: &[u32],
     block_size: u32,
     block_hashes: Vec<LocalBlockHash>,
+    gms_content_hashes_hex: Option<&[String]>,
 ) -> Result<
     (
         TieredMatchDetails,
@@ -119,18 +144,25 @@ async fn query_owned(
     ),
     KvRouterError,
 > {
+    let indexer_fut = async move {
+        if let Some(gms_content_hashes_hex) = gms_content_hashes_hex {
+            indexer
+                .find_matches_by_tier_with_gms_placements(
+                    block_hashes,
+                    Some(gms_content_hashes_hex),
+                )
+                .await
+        } else {
+            indexer.find_matches_by_tier(block_hashes).await
+        }
+    }
+    .instrument(tracing::info_span!("kv_router.find_matches"));
+
     let Some(shared_cache) = shared_cache else {
         let t = Instant::now();
-        let tiered = indexer
-            .find_matches_by_tier(block_hashes)
-            .instrument(tracing::info_span!("kv_router.find_matches"))
-            .await?;
+        let tiered = indexer_fut.await?;
         return Ok((tiered, None, t.elapsed(), None));
     };
-
-    let indexer_fut = indexer
-        .find_matches_by_tier(block_hashes)
-        .instrument(tracing::info_span!("kv_router.find_matches"));
     join_indexer_and_shared_cache(indexer_fut, shared_cache, tokens, block_size).await
 }
 
