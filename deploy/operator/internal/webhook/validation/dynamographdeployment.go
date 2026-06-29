@@ -42,6 +42,17 @@ import (
 
 var betaTopologyDomainRegex = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
 
+const supportedInterPodGMSBackends = "vllm, sglang, trtllm"
+
+func isInterPodGMSSupportedBackend(framework string) bool {
+	switch dynamo.BackendFramework(framework) {
+	case dynamo.BackendFrameworkVLLM, dynamo.BackendFrameworkSGLang, dynamo.BackendFrameworkTRTLLM:
+		return true
+	default:
+		return false
+	}
+}
+
 // DynamoGraphDeploymentValidator validates v1beta1 DynamoGraphDeployment resources.
 type DynamoGraphDeploymentValidator struct {
 	mgr          ctrl.Manager
@@ -344,23 +355,20 @@ func (v *dynamoGraphDeploymentValidation) validateComponent(
 			fieldPath, nvidiacomv1beta1.GMSModeInterPod))
 	}
 
-	// The inter-pod GMS layout is currently implemented only for vLLM (the
-	// engine relies on vLLM-specific runtime hooks like --load-format gms; the
-	// failover variant additionally enables vLLM shadow mode). Fail fast at
-	// admission rather than producing a broken deployment when another or no
-	// backend is configured; an empty BackendFramework means the operator cannot
-	// confirm the engine speaks vLLM, which is a hard prerequisite for inter-pod
-	// GMS (both standalone and with failover).
+	// The inter-pod GMS layout needs backend runtime hooks for GMS loading and
+	// failover activation. Fail closed when the graph backend is unset or does
+	// not have GMS integration, rather than rendering a pod set whose engine
+	// follows the vanilla weight/KV path.
 	if component.IsInterPodGMSEnabled() &&
-		v.deployment.Spec.BackendFramework != string(dynamo.BackendFrameworkVLLM) {
+		!isInterPodGMSSupportedBackend(v.deployment.Spec.BackendFramework) {
 		detected := v.deployment.Spec.BackendFramework
 		if detected == "" {
 			detected = unsetValue
 		}
 		return nil, fmt.Errorf(
-			"%s: the inter-pod GMS layout (experimental.gpuMemoryService.mode=%q) is currently supported only for vLLM (detected: %s); "+
-				"set spec.backendFramework=%q",
-			fieldPath, nvidiacomv1beta1.GMSModeInterPod, detected, dynamo.BackendFrameworkVLLM)
+			"%s: the inter-pod GMS layout (experimental.gpuMemoryService.mode=%q) is supported only for backendFramework in [%s] (detected: %s); "+
+				"set spec.backendFramework to a supported GMS backend",
+			fieldPath, nvidiacomv1beta1.GMSModeInterPod, supportedInterPodGMSBackends, detected)
 	}
 
 	if v.isGrovePathway() {

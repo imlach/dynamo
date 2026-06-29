@@ -26,6 +26,7 @@ import (
 	nvidiacomv1alpha1 "github.com/ai-dynamo/dynamo/deploy/operator/api/v1alpha1"
 	nvidiacomv1beta1 "github.com/ai-dynamo/dynamo/deploy/operator/api/v1beta1"
 	"github.com/ai-dynamo/dynamo/deploy/operator/internal/consts"
+	"github.com/ai-dynamo/dynamo/deploy/operator/internal/dynamo"
 	grovev1alpha1 "github.com/ai-dynamo/grove/operator/api/core/v1alpha1"
 	admissionv1 "k8s.io/api/admission/v1"
 	authenticationv1 "k8s.io/api/authentication/v1"
@@ -112,13 +113,38 @@ func TestDynamoGraphDeploymentValidator_Validate(t *testing.T) {
 			wantWebhookErr: `spec.components[worker]: experimental.gpuMemoryService.mode="InterPod" requires the Grove pathway`,
 		},
 		{
-			name:         "inter-pod GMS requires vLLM backend",
+			name:         "valid inter-pod GMS on SGLang backend",
 			groveEnabled: true,
 			deployment: betaDGDForAdmission(func(dgd *nvidiacomv1beta1.DynamoGraphDeployment) {
-				dgd.Spec.BackendFramework = "sglang"
+				dgd.Spec.BackendFramework = string(dynamo.BackendFrameworkSGLang)
 				enableBetaInterPodGMS(betaWorkerComponent(dgd))
 			}),
-			wantWebhookErr: `spec.components[worker]: the inter-pod GMS layout (experimental.gpuMemoryService.mode="InterPod") is currently supported only for vLLM`,
+		},
+		{
+			name:         "valid inter-pod GMS on TRT-LLM backend",
+			groveEnabled: true,
+			deployment: betaDGDForAdmission(func(dgd *nvidiacomv1beta1.DynamoGraphDeployment) {
+				dgd.Spec.BackendFramework = string(dynamo.BackendFrameworkTRTLLM)
+				enableBetaInterPodGMS(betaWorkerComponent(dgd))
+			}),
+		},
+		{
+			name:         "inter-pod GMS rejects unsupported backend",
+			groveEnabled: true,
+			deployment: betaDGDForAdmission(func(dgd *nvidiacomv1beta1.DynamoGraphDeployment) {
+				dgd.Spec.BackendFramework = "noop"
+				enableBetaInterPodGMS(betaWorkerComponent(dgd))
+			}),
+			wantSchemaErr: `spec.backendFramework: Unsupported value: "noop": supported values: "sglang", "vllm", "trtllm"`,
+		},
+		{
+			name:         "inter-pod GMS rejects unset backend",
+			groveEnabled: true,
+			deployment: betaDGDForAdmission(func(dgd *nvidiacomv1beta1.DynamoGraphDeployment) {
+				dgd.Spec.BackendFramework = ""
+				enableBetaInterPodGMS(betaWorkerComponent(dgd))
+			}),
+			wantWebhookErr: `spec.components[worker]: the inter-pod GMS layout (experimental.gpuMemoryService.mode="InterPod") is supported only for backendFramework in [vllm, sglang, trtllm] (detected: <unset>)`,
 		},
 		{
 			name: "KV transfer policy selector is rejected by CEL before webhook validation",
