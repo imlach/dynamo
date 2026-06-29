@@ -1012,6 +1012,7 @@ mod tests {
             sequence_hashes: None,
             isl_tokens: None,
             lora_name: None,
+            cache_namespace: None,
             is_eagle: None,
         }
     }
@@ -1229,6 +1230,7 @@ mod tests {
                     sequence_hashes: Some(vec![1, 2]),
                     isl_tokens: Some(8),
                     lora_name: None,
+                    cache_namespace: None,
                     is_eagle: None,
                 },
                 router_config_override: None,
@@ -1255,6 +1257,7 @@ mod tests {
                         sequence_hashes: Some(vec![101, 102]),
                         isl_tokens: Some(8),
                         lora_name: None,
+                        cache_namespace: None,
                         is_eagle: None,
                     },
                     router_config_override: None,
