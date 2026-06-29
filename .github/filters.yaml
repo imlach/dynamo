@@ -110,6 +110,7 @@ core:
   - 'components/src/dynamo/replay/**'
   - 'components/src/dynamo/frontend/**'
   - 'components/src/dynamo/common/**'
+  - 'components/src/dynamo/gms_router_policy.py'
   - 'components/src/dynamo/gpu_memory_service/**'
   # TODO(will): Move TokenSpeed to a dedicated framework filter once CI has
   # TokenSpeed Docker images and backend-specific build/test jobs.
@@ -222,6 +223,7 @@ frontend:
   - 'components/src/dynamo/replay/**'
   - 'components/src/dynamo/frontend/**'
   - 'components/src/dynamo/common/**'
+  - 'components/src/dynamo/gms_router_policy.py'
   - 'deploy/inference-gateway/**'
   - 'container/templates/frontend.Dockerfile'
   - '!**/*.md'
