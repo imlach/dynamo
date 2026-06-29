@@ -16,6 +16,7 @@ use super::{
     ClaimCloseOutcome, ClaimEvent, ClaimOutcome, ClaimPayload, ClaimPayloadFuture, Discovery,
     DiscoveryEvent, DiscoveryInstance, DiscoveryInstanceId, DiscoveryQuery, DiscoverySpec,
     DiscoveryStream, EndpointInstanceId, EventChannelInstanceId, ModelCardInstanceId,
+    resolve_logical_instance_id,
 };
 use crate::storage::kv;
 
@@ -31,6 +32,7 @@ pub struct KVStoreDiscovery {
     store: Arc<kv::Manager>,
     cancel_token: CancellationToken,
     claims: ClaimState,
+    instance_id: u64,
 }
 
 /// Process-local invalidation relay for the shared claims bucket.
@@ -126,12 +128,15 @@ impl Drop for ClaimWatcherActiveGuard {
 }
 
 impl KVStoreDiscovery {
-    pub fn new(store: kv::Manager, cancel_token: CancellationToken) -> Self {
-        Self {
+    pub fn new(store: kv::Manager, cancel_token: CancellationToken) -> Result<Self> {
+        let physical_instance_id = store.connection_id();
+        let instance_id = resolve_logical_instance_id(physical_instance_id)?;
+        Ok(Self {
             store: Arc::new(store),
             cancel_token,
             claims: ClaimState::new(),
-        }
+            instance_id,
+        })
     }
 
     async fn ensure_claim_watcher(&self) -> Result<()> {
@@ -412,7 +417,7 @@ impl KVStoreDiscovery {
 #[async_trait]
 impl Discovery for KVStoreDiscovery {
     fn instance_id(&self) -> u64 {
-        self.store.connection_id()
+        self.instance_id
     }
 
     async fn register_internal(&self, spec: DiscoverySpec) -> Result<DiscoveryInstance> {
@@ -1160,7 +1165,7 @@ mod tests {
     async fn test_kv_store_discovery_register_endpoint() {
         let store = kv::Manager::memory();
         let cancel_token = CancellationToken::new();
-        let client = KVStoreDiscovery::new(store, cancel_token);
+        let client = KVStoreDiscovery::new(store, cancel_token).unwrap();
 
         let spec = DiscoverySpec::Endpoint {
             namespace: "test".to_string(),
@@ -1186,7 +1191,7 @@ mod tests {
     async fn test_kv_store_discovery_list() {
         let store = kv::Manager::memory();
         let cancel_token = CancellationToken::new();
-        let client = KVStoreDiscovery::new(store, cancel_token);
+        let client = KVStoreDiscovery::new(store, cancel_token).unwrap();
 
         // Register multiple endpoints
         let spec1 = DiscoverySpec::Endpoint {
@@ -1244,7 +1249,7 @@ mod tests {
     async fn test_kv_store_discovery_watch() {
         let store = kv::Manager::memory();
         let cancel_token = CancellationToken::new();
-        let client = Arc::new(KVStoreDiscovery::new(store, cancel_token.clone()));
+        let client = Arc::new(KVStoreDiscovery::new(store, cancel_token.clone()).unwrap());
 
         // Start watching before registering
         let mut stream = client
