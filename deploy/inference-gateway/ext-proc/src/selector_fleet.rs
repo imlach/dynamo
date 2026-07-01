@@ -110,6 +110,10 @@ pub struct SelectorFleet {
     /// Rotates selection across routable replicas (round-robin) instead of
     /// always hitting the lexicographically smallest one.
     select_cursor: AtomicUsize,
+    /// `reservation_id -> replica http base` for every live booking. A booking
+    /// lives on the replica that served the `select_and_reserve`, so
+    /// `free_reservation`/`prefill_complete` must target that same replica.
+    reservations: Mutex<HashMap<String, String>>,
     changes_rx: watch::Receiver<u64>,
 }
 
@@ -192,6 +196,7 @@ impl SelectorFleet {
             replica_sync_port: cfg.selector_replica_sync_port,
             replicas: Mutex::new(BTreeMap::new()),
             select_cursor: AtomicUsize::new(0),
+            reservations: Mutex::new(HashMap::new()),
             changes_rx,
         })
     }
@@ -471,6 +476,15 @@ impl SelectionBackend for SelectorFleet {
         let Some(base) = self.pick_routable_base().await else {
             bail!("no routable selector replica available");
         };
+
+        // Record the booking's replica BEFORE the POST so that if the response is
+        // lost after the replica booked, `free_reservation` still knows where to
+        // send the release. Requires the caller to supply the reservation id (the
+        // EPP always does); a selector-minted id is recorded post-response below.
+        if let Some(rid) = req.reservation_id.clone() {
+            self.reservations.lock().await.insert(rid, base.clone());
+        }
+
         let resp = self
             .http
             .post(format!("{base}/select_and_reserve"))
@@ -479,9 +493,66 @@ impl SelectionBackend for SelectorFleet {
             .await
             .with_context(|| format!("POST /select_and_reserve to {base}"))?;
         let resp = ensure_success(resp, "POST /select_and_reserve", &base).await?;
-        resp.json::<SelectResponse>()
+        let selected: SelectResponse = resp
+            .json()
             .await
-            .context("decoding /select_and_reserve response")
+            .context("decoding /select_and_reserve response")?;
+
+        // Cover a selector-minted id that differs from (or was absent in) the
+        // request; the booking lives on this replica (replica-sync only
+        // propagates the load effect to peers).
+        if let Some(rid) = selected.reservation_id.clone()
+            && req.reservation_id.as_deref() != Some(rid.as_str())
+        {
+            self.reservations.lock().await.insert(rid, base);
+        }
+        Ok(selected)
+    }
+
+    async fn free_reservation(&self, reservation_id: &str) -> Result<()> {
+        // Drop the mapping regardless; the booking is being released.
+        let Some(base) = self.reservations.lock().await.remove(reservation_id) else {
+            // Never booked on this EPP (e.g. a body-less request), or the
+            // booking replica already disappeared — nothing to free.
+            return Ok(());
+        };
+        let resp = self
+            .http
+            .delete(format!("{base}/reservations/{reservation_id}"))
+            .send()
+            .await
+            .with_context(|| format!("DELETE /reservations/{reservation_id} to {base}"))?;
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(());
+        }
+        ensure_success(resp, "DELETE /reservations/{id}", &base).await?;
+        Ok(())
+    }
+
+    async fn prefill_complete(&self, reservation_id: &str) -> Result<()> {
+        // Keep the mapping — the reservation is still live until completion.
+        let Some(base) = self
+            .reservations
+            .lock()
+            .await
+            .get(reservation_id)
+            .cloned()
+        else {
+            return Ok(());
+        };
+        let resp = self
+            .http
+            .post(format!(
+                "{base}/reservations/{reservation_id}/prefill_complete"
+            ))
+            .send()
+            .await
+            .with_context(|| format!("POST /reservations/{reservation_id}/prefill_complete to {base}"))?;
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(());
+        }
+        ensure_success(resp, "POST /reservations/{id}/prefill_complete", &base).await?;
+        Ok(())
     }
 
     async fn any_ready(&self) -> bool {

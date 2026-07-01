@@ -141,7 +141,7 @@ impl SelectionBackend for EmbeddedSelectionBackend {
             model_name: req.model_name.clone(),
             tenant_id: DEFAULT_TENANT.to_string(),
             selection_id: req.selection_id.clone(),
-            reservation_id: None,
+            reservation_id: req.reservation_id.clone(),
             prompt: PromptRequest {
                 token_ids: Some(req.token_ids.clone()),
                 ..Default::default()
@@ -161,6 +161,7 @@ impl SelectionBackend for EmbeddedSelectionBackend {
             .map_err(|e| anyhow!("embedded select_and_reserve failed: {e}"))?;
         Ok(SelectResponse {
             selection_id: resp.selection_id,
+            reservation_id: resp.reservation_id,
             worker_id: resp.worker_id,
             dp_rank: resp.dp_rank,
             endpoint: resp.endpoint,
@@ -173,6 +174,22 @@ impl SelectionBackend for EmbeddedSelectionBackend {
             },
             effective_prefill_tokens: resp.effective_prefill_tokens,
         })
+    }
+
+    async fn free_reservation(&self, reservation_id: &str) -> Result<()> {
+        match self.core.free_reservation(reservation_id).await {
+            // A reservation that was never booked (e.g. a body-less request) is
+            // not an error (idempotent).
+            Ok(()) | Err(SelectionError::NotFound(_)) => Ok(()),
+            Err(e) => Err(anyhow!("embedded free_reservation failed: {e}")),
+        }
+    }
+
+    async fn prefill_complete(&self, reservation_id: &str) -> Result<()> {
+        match self.core.prefill_complete(reservation_id).await {
+            Ok(()) | Err(SelectionError::NotFound(_)) => Ok(()),
+            Err(e) => Err(anyhow!("embedded prefill_complete failed: {e}")),
+        }
     }
 
     async fn any_ready(&self) -> bool {
