@@ -270,9 +270,9 @@ def update_engine_config_with_dynamo(
     if envs.is_set("DYN_FORWARDPASS_METRIC_PORT"):
         existing_cls = getattr(engine_config, "scheduler_cls", None)
         if existing_cls is None:
-            defaults[
-                "scheduler_cls"
-            ] = "dynamo.vllm.instrumented_scheduler.InstrumentedScheduler"
+            defaults["scheduler_cls"] = (
+                "dynamo.vllm.instrumented_scheduler.InstrumentedScheduler"
+            )
             logger.info(
                 "Forward pass metrics enabled: scheduler_cls set to InstrumentedScheduler "
                 f"(port={envs.DYN_FORWARDPASS_METRIC_PORT})"
@@ -286,6 +286,16 @@ def update_engine_config_with_dynamo(
             )
 
     if dynamo_config.benchmark_mode is not None:
+        if (
+            dynamo_config.benchmark_mode in ("prefill", "agg")
+            and int(dynamo_config.benchmark_prefill_kv_read_granularity) > 1
+            and not engine_config.enable_prefix_caching
+        ):
+            raise ValueError(
+                "--benchmark-prefill-kv-read-granularity greater than 1 "
+                "requires prefix caching; remove --no-enable-prefix-caching "
+                "or use granularity 1."
+            )
         if dynamo_config.multimodal_worker or dynamo_config.multimodal_decode_worker:
             logger.warning(
                 "--benchmark-mode is not supported for multimodal workers. "
@@ -293,9 +303,9 @@ def update_engine_config_with_dynamo(
             )
         existing_cls = getattr(engine_config, "scheduler_cls", None)
         if existing_cls is None and not envs.is_set("DYN_FORWARDPASS_METRIC_PORT"):
-            defaults[
-                "scheduler_cls"
-            ] = "dynamo.vllm.instrumented_scheduler.InstrumentedScheduler"
+            defaults["scheduler_cls"] = (
+                "dynamo.vllm.instrumented_scheduler.InstrumentedScheduler"
+            )
             logger.info("Benchmark mode: auto-enabling InstrumentedScheduler")
         elif existing_cls is not None and "InstrumentedScheduler" not in str(
             existing_cls
@@ -308,6 +318,7 @@ def update_engine_config_with_dynamo(
         dynamo_config._benchmark_additional_config = {  # type: ignore[attr-defined]
             "mode": dynamo_config.benchmark_mode,
             "prefill_isl_granularity": dynamo_config.benchmark_prefill_granularity,
+            "prefill_kv_read_granularity": dynamo_config.benchmark_prefill_kv_read_granularity,
             "decode_length_granularity": dynamo_config.benchmark_decode_length_granularity,
             "decode_batch_size_granularity": dynamo_config.benchmark_decode_batch_granularity,
             "warmup_iterations": dynamo_config.benchmark_warmup_iterations,
