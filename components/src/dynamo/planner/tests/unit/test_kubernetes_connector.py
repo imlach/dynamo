@@ -599,6 +599,29 @@ async def test_validate_deployment_true(kubernetes_connector, mock_kube_api):
 
 
 @pytest.mark.asyncio
+async def test_validate_deployment_uses_names_for_unannotated_legacy_components(
+    kubernetes_connector, mock_kube_api
+):
+    mock_kube_api.get_graph_deployment.return_value = _deployment(
+        _component(
+            "VllmPrefillWorker",
+            replicas=1,
+            args=["--served-model-name", "test-model"],
+        ),
+        _component(
+            "VllmDecodeWorker",
+            replicas=1,
+            args=["--served-model-name", "test-model"],
+        ),
+    )
+
+    await kubernetes_connector.validate_deployment(
+        prefill_component_name="VllmPrefillWorker",
+        decode_component_name="VllmDecodeWorker",
+    )
+
+
+@pytest.mark.asyncio
 async def test_validate_deployment_fail(kubernetes_connector, mock_kube_api):
     # Arrange
     mock_deployment = _deployment(
@@ -922,7 +945,8 @@ def test_get_gpu_counts_service_not_found_raises_error(
 # Tests for get_actual_worker_counts
 
 
-def test_get_actual_worker_counts_stable(kubernetes_connector, mock_kube_api):
+@pytest.mark.asyncio
+async def test_get_actual_worker_counts_stable(kubernetes_connector, mock_kube_api):
     """Test get_actual_worker_counts when both services are stable"""
     mock_deployment = _deployment(
         _component("prefill-component"),
@@ -935,7 +959,7 @@ def test_get_actual_worker_counts_stable(kubernetes_connector, mock_kube_api):
         prefill_count,
         decode_count,
         is_stable,
-    ) = kubernetes_connector.get_actual_worker_counts(
+    ) = await kubernetes_connector.get_actual_worker_counts(
         prefill_component_name="prefill-component",
         decode_component_name="decode-component",
     )
@@ -945,7 +969,8 @@ def test_get_actual_worker_counts_stable(kubernetes_connector, mock_kube_api):
     assert is_stable is True
 
 
-def test_get_actual_worker_counts_prefill_rollout_in_progress(
+@pytest.mark.asyncio
+async def test_get_actual_worker_counts_prefill_rollout_in_progress(
     kubernetes_connector, mock_kube_api
 ):
     """Test get_actual_worker_counts when prefill has rollout in progress"""
@@ -965,7 +990,7 @@ def test_get_actual_worker_counts_prefill_rollout_in_progress(
         prefill_count,
         decode_count,
         is_stable,
-    ) = kubernetes_connector.get_actual_worker_counts(
+    ) = await kubernetes_connector.get_actual_worker_counts(
         prefill_component_name="prefill-component",
         decode_component_name="decode-component",
     )
@@ -975,7 +1000,10 @@ def test_get_actual_worker_counts_prefill_rollout_in_progress(
     assert is_stable is False
 
 
-def test_get_actual_worker_counts_prefill_only(kubernetes_connector, mock_kube_api):
+@pytest.mark.asyncio
+async def test_get_actual_worker_counts_prefill_only(
+    kubernetes_connector, mock_kube_api
+):
     """Test get_actual_worker_counts with only prefill component"""
     mock_deployment = _deployment(
         _component("prefill-component", "prefill", replicas=2)
@@ -987,7 +1015,7 @@ def test_get_actual_worker_counts_prefill_only(kubernetes_connector, mock_kube_a
         prefill_count,
         decode_count,
         is_stable,
-    ) = kubernetes_connector.get_actual_worker_counts(
+    ) = await kubernetes_connector.get_actual_worker_counts(
         prefill_component_name="prefill-component",
         decode_component_name=None,
     )
@@ -997,7 +1025,10 @@ def test_get_actual_worker_counts_prefill_only(kubernetes_connector, mock_kube_a
     assert is_stable is True
 
 
-def test_get_actual_worker_counts_decode_only(kubernetes_connector, mock_kube_api):
+@pytest.mark.asyncio
+async def test_get_actual_worker_counts_decode_only(
+    kubernetes_connector, mock_kube_api
+):
     """Test get_actual_worker_counts with only decode component"""
     mock_deployment = _deployment(_component("decode-component", "decode", replicas=4))
     mock_kube_api.get_graph_deployment.return_value = mock_deployment
@@ -1007,7 +1038,7 @@ def test_get_actual_worker_counts_decode_only(kubernetes_connector, mock_kube_ap
         prefill_count,
         decode_count,
         is_stable,
-    ) = kubernetes_connector.get_actual_worker_counts(
+    ) = await kubernetes_connector.get_actual_worker_counts(
         prefill_component_name=None,
         decode_component_name="decode-component",
     )
@@ -1017,7 +1048,10 @@ def test_get_actual_worker_counts_decode_only(kubernetes_connector, mock_kube_ap
     assert is_stable is True
 
 
-def test_get_actual_worker_counts_no_components(kubernetes_connector, mock_kube_api):
+@pytest.mark.asyncio
+async def test_get_actual_worker_counts_no_components(
+    kubernetes_connector, mock_kube_api
+):
     """Test get_actual_worker_counts with no components specified"""
     mock_deployment = {
         "metadata": {"name": "test-graph"},
@@ -1030,7 +1064,7 @@ def test_get_actual_worker_counts_no_components(kubernetes_connector, mock_kube_
         prefill_count,
         decode_count,
         is_stable,
-    ) = kubernetes_connector.get_actual_worker_counts(
+    ) = await kubernetes_connector.get_actual_worker_counts(
         prefill_component_name=None,
         decode_component_name=None,
     )
