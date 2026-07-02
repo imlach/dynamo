@@ -564,6 +564,14 @@ class SglangProcessor:
             first_chunk = True
             input_tokens = len(tokens)
             cumulative_output_tokens = 0
+            # Rust postprocessor is bypassed on this path, so emit the multimodal
+            # content-part counts here too (else frontend metrics report zero media).
+            _mm_counts = extract_mm_urls(request.get("messages", [])) or {}
+            image_count = len(_mm_counts.get("image_url", []))
+            video_count = len(_mm_counts.get("video_url", []))
+            audio_count = len(_mm_counts.get("audio_url", []))
+            # Counts are request-constant; emit them on the first metrics frame only.
+            counts_emitted = False
 
             async for dynamo_response in dynamo_stream:
                 if dynamo_response.is_error():
@@ -654,6 +662,15 @@ class SglangProcessor:
                         "output_tokens": cumulative_output_tokens,
                         "chunk_tokens": len(pending_token_ids),
                     }
+                    # Emit nonzero counts on the first metrics frame only.
+                    if not counts_emitted:
+                        counts_emitted = True
+                        if image_count:
+                            metrics["image_count"] = image_count
+                        if video_count:
+                            metrics["video_count"] = video_count
+                        if audio_count:
+                            metrics["audio_count"] = audio_count
                     cached_tokens = _cached_tokens_from_usage(usage_for_metrics)
                     if cached_tokens is not None:
                         metrics["cached_tokens"] = cached_tokens
