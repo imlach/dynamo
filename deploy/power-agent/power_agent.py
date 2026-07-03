@@ -841,7 +841,10 @@ def _shutdown_cleanup(actuator: Actuator) -> None:
             if restore_result is False:
                 logger.warning(
                     "Skipped default TGP restore for GPU %d via %s actuator "
-                    "(managed GPU no longer visible)",
+                    "(cap not conclusively released: GPU no longer locatable, "
+                    "or its identity could not be confirmed at write time — "
+                    "re-enumeration/unverifiable); leaving it managed so the "
+                    "UUID sweep and next-startup orphan recovery retry.",
                     gpu_idx,
                     actuator.name,
                 )

@@ -271,6 +271,16 @@ jobs:
             --set daemonset.enabled=false \
             --set dev.enabled=true \
             --set dev.nodeName=ci-node >/dev/null
+      - name: Helm unit tests
+        # Runs deploy/helm/charts/power-agent/tests/*.yaml (the image.tag /
+        # image.digest gating, dev image-tag, and --actuator wiring assertions).
+        # Pinned to v1.0.3: v1.1.0 ships a plugin.yaml with `platformHooks`,
+        # which the Set-up-Helm v3.17.3 above cannot unmarshal ("unknown field
+        # platformHooks" — helm-unittest#856), breaking EVERY subsequent helm
+        # call. v1.0.3 is the last release that installs+runs on Helm 3.x here.
+        run: |
+          helm plugin install https://github.com/helm-unittest/helm-unittest --version v1.0.3
+          helm unittest deploy/helm/charts/power-agent
 
 # ============================================================================
 # FRAMEWORK PIPELINES (Build → Test → Copy)
