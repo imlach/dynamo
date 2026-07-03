@@ -73,6 +73,7 @@ from dynamo.vllm.capacity import per_rank_kv_blocks
 
 from .handlers import (
     VllmEnginePauseController,
+    _apply_nvext_cache_salt,
     build_sampling_params,
     get_dp_range_for_worker,
 )
@@ -364,12 +365,14 @@ class VllmLLMEngine(LLMEngine):
 
         request_id = context.id()
 
+        # TODO: remove the copy once both helpers accept GenerateRequest.
+        request_dict = dict(request)
         token_ids = request.get("token_ids", [])
         prompt = TokensPrompt(prompt_token_ids=token_ids)
+        _apply_nvext_cache_salt(request_dict, prompt)
 
-        # TODO: remove dict() once build_sampling_params accepts GenerateRequest
         sampling_params = build_sampling_params(
-            dict(request),
+            request_dict,
             self._default_sampling_params,
             self._model_max_len,
             enable_rl=self.enable_rl,
