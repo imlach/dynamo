@@ -21,3 +21,7 @@
 # Served by Netlify and intermittently fails from GitHub runners.
 ^https://etcd\.io/?$
 ^https://etcd\.io/docs/v3\.5/install/?$
+
+# Refuses connections from GitHub runners (consistent across retries and
+# reruns). Loads fine from a normal browser.
+^https://book\.kubebuilder\.io/
