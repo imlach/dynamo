@@ -35,7 +35,7 @@ var _ = Describe("DynamoGraphDeployment API validation", func() {
 		return &nvidiacomv1beta1.DynamoGraphDeployment{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      name,
-				Namespace: "default",
+				Namespace: envtestNamespace,
 			},
 			Spec: nvidiacomv1beta1.DynamoGraphDeploymentSpec{
 				Components: []nvidiacomv1beta1.DynamoComponentDeploymentSharedSpec{

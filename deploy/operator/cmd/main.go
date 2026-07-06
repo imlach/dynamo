@@ -69,17 +69,12 @@ import (
 	"github.com/ai-dynamo/dynamo/deploy/operator/internal/consts"
 	"github.com/ai-dynamo/dynamo/deploy/operator/internal/controller"
 	commonController "github.com/ai-dynamo/dynamo/deploy/operator/internal/controller_common"
-	"github.com/ai-dynamo/dynamo/deploy/operator/internal/gpu"
-	"github.com/ai-dynamo/dynamo/deploy/operator/internal/modelendpoint"
 	"github.com/ai-dynamo/dynamo/deploy/operator/internal/namespace_scope"
 	"github.com/ai-dynamo/dynamo/deploy/operator/internal/observability"
 	"github.com/ai-dynamo/dynamo/deploy/operator/internal/rbac"
 	"github.com/ai-dynamo/dynamo/deploy/operator/internal/secret"
 	"github.com/ai-dynamo/dynamo/deploy/operator/internal/secrets"
-	internalwebhook "github.com/ai-dynamo/dynamo/deploy/operator/internal/webhook"
-	webhookdefaulting "github.com/ai-dynamo/dynamo/deploy/operator/internal/webhook/defaulting"
-	webhookmutation "github.com/ai-dynamo/dynamo/deploy/operator/internal/webhook/mutation"
-	webhookvalidation "github.com/ai-dynamo/dynamo/deploy/operator/internal/webhook/validation"
+	webhooksetup "github.com/ai-dynamo/dynamo/deploy/operator/internal/webhook/setup"
 	grovev1alpha1 "github.com/ai-dynamo/grove/operator/api/core/v1alpha1"
 	istioclientsetscheme "istio.io/client-go/pkg/clientset/versioned/scheme"
 	gaiev1 "sigs.k8s.io/gateway-api-inference-extension/api/v1"
@@ -668,105 +663,48 @@ func registerControllers(
 	dockerSecretRetriever *secrets.DockerSecretIndexer,
 	sshKeyManager *secret.SSHKeyManager,
 ) error {
-	if err := (&controller.DynamoComponentDeploymentReconciler{
-		Client:                mgr.GetClient(),
-		Recorder:              mgr.GetEventRecorderFor("dynamocomponentdeployment"),
-		Config:                operatorCfg,
-		RuntimeConfig:         runtimeConfig,
-		DockerSecretRetriever: dockerSecretRetriever,
-	}).SetupWithManager(mgr); err != nil {
-		return fmt.Errorf("unable to create DynamoComponentDeployment controller: %w", err)
-	}
-
 	scaleClient, err := createScalesGetter(mgr)
 	if err != nil {
 		return fmt.Errorf("unable to create scale client: %w", err)
 	}
 
-	rbacManager := rbac.NewManager(mgr.GetClient())
-
-	if err = (&controller.DynamoGraphDeploymentReconciler{
-		Client:                mgr.GetClient(),
-		Recorder:              mgr.GetEventRecorderFor("dynamographdeployment"),
+	setupOptions := controller.SetupOptions{
 		Config:                operatorCfg,
 		RuntimeConfig:         runtimeConfig,
-		RestConfig:            mgr.GetConfig(),
 		DockerSecretRetriever: dockerSecretRetriever,
 		ScaleClient:           scaleClient,
+		RBACManager:           rbac.NewManager(mgr.GetClient()),
 		SSHKeyManager:         sshKeyManager,
-		RBACManager:           rbacManager,
-	}).SetupWithManager(mgr); err != nil {
-		return fmt.Errorf("unable to create DynamoGraphDeployment controller: %w", err)
 	}
 
-	if err = (&controller.DynamoGraphDeploymentScalingAdapterReconciler{
-		Client:        mgr.GetClient(),
-		Scheme:        mgr.GetScheme(),
-		Recorder:      mgr.GetEventRecorderFor("dgdscalingadapter"),
-		Config:        operatorCfg,
-		RuntimeConfig: runtimeConfig,
-	}).SetupWithManager(mgr); err != nil {
-		return fmt.Errorf("unable to create DGDScalingAdapter controller: %w", err)
+	if err := controller.SetupDynamoComponentDeployment(mgr, setupOptions); err != nil {
+		return err
 	}
-
-	if err = (&controller.DynamoGraphDeploymentRequestReconciler{
-		Client:            mgr.GetClient(),
-		APIReader:         mgr.GetAPIReader(),
-		Recorder:          mgr.GetEventRecorderFor("dynamographdeploymentrequest"),
-		Config:            operatorCfg,
-		RuntimeConfig:     runtimeConfig,
-		GPUDiscoveryCache: gpu.NewGPUDiscoveryCache(),
-		GPUDiscovery:      gpu.NewGPUDiscovery(gpu.ScrapeMetricsEndpoint),
-		RBACManager:       rbacManager,
-	}).SetupWithManager(mgr); err != nil {
-		return fmt.Errorf("unable to create DynamoGraphDeploymentRequest controller: %w", err)
+	if err := controller.SetupDynamoGraphDeployment(mgr, setupOptions); err != nil {
+		return err
 	}
-
-	if err = (&controller.DynamoModelReconciler{
-		Client:         mgr.GetClient(),
-		Recorder:       mgr.GetEventRecorderFor("dynamomodel"),
-		EndpointClient: modelendpoint.NewClient(),
-		Config:         operatorCfg,
-		RuntimeConfig:  runtimeConfig,
-	}).SetupWithManager(mgr); err != nil {
-		return fmt.Errorf("unable to create DynamoModel controller: %w", err)
+	if err := controller.SetupDynamoGraphDeploymentScalingAdapter(mgr, setupOptions); err != nil {
+		return err
 	}
-
-	if err = (&controller.CheckpointReconciler{
-		Client:        mgr.GetClient(),
-		Config:        operatorCfg,
-		RuntimeConfig: runtimeConfig,
-		Recorder:      mgr.GetEventRecorderFor("checkpoint"),
-	}).SetupWithManager(mgr); err != nil {
-		return fmt.Errorf("unable to create DynamoCheckpoint controller: %w", err)
+	if err := controller.SetupDynamoGraphDeploymentRequest(mgr, setupOptions); err != nil {
+		return err
 	}
-
-	if err = (&controller.PodSnapshotReconciler{
-		Client:        mgr.GetClient(),
-		Config:        operatorCfg,
-		RuntimeConfig: runtimeConfig,
-		Recorder:      mgr.GetEventRecorderFor("snapshot"),
-	}).SetupWithManager(mgr); err != nil {
-		return fmt.Errorf("unable to create PodSnapshot controller: %w", err)
+	if err := controller.SetupDynamoModel(mgr, setupOptions); err != nil {
+		return err
 	}
-
+	if err := controller.SetupDynamoCheckpoint(mgr, setupOptions); err != nil {
+		return err
+	}
+	if err := controller.SetupPodSnapshot(mgr, setupOptions); err != nil {
+		return err
+	}
 	if runtimeConfig.GroveEnabled {
-		if err = controller.NewFailoverCascadeReconciler(
-			mgr.GetClient(),
-			mgr.GetEventRecorderFor("gms-failover-cascade"),
-		).SetupWithManager(mgr); err != nil {
-			return fmt.Errorf("unable to create GMS FailoverCascade controller: %w", err)
+		if err := controller.SetupFailoverCascade(mgr, setupOptions); err != nil {
+			return err
 		}
 	}
-
-	if err = (&controller.TopologyLabelReconciler{
-		Client:        mgr.GetClient(),
-		NodeReader:    mgr.GetAPIReader(),
-		Config:        operatorCfg,
-		RuntimeConfig: runtimeConfig,
-		Recorder:      mgr.GetEventRecorderFor("topology-label"),
-	}).SetupWithManager(mgr); err != nil {
-		return fmt.Errorf("unable to create TopologyLabel controller: %w", err)
+	if err := controller.SetupTopologyLabel(mgr, setupOptions); err != nil {
+		return err
 	}
 
 	setupLog.Info("Controllers registered successfully")
@@ -779,16 +717,6 @@ func registerWebhookHandlers(
 	runtimeConfig *commonController.RuntimeConfig,
 	operatorVersion string,
 ) error {
-	isClusterWide := operatorCfg.Namespace.Restricted == ""
-	if isClusterWide {
-		setupLog.Info("Configuring webhooks with lease-based namespace exclusion for cluster-wide mode")
-		internalwebhook.SetExcludedNamespaces(runtimeConfig.ExcludedNamespaces)
-	} else {
-		setupLog.Info("Configuring webhooks for namespace-restricted mode (no lease checking)",
-			"restrictedNamespace", operatorCfg.Namespace.Restricted)
-		internalwebhook.SetExcludedNamespaces(nil)
-	}
-
 	var operatorPrincipal string
 	if sa, ns := os.Getenv("POD_SERVICE_ACCOUNT"), os.Getenv("POD_NAMESPACE"); sa != "" && ns != "" {
 		operatorPrincipal = fmt.Sprintf("system:serviceaccount:%s:%s", ns, sa)
@@ -805,77 +733,13 @@ func registerWebhookHandlers(
 		)
 	}
 
-	setupLog.Info("Registering validation webhooks")
-
-	dcdHandler := webhookvalidation.NewDynamoComponentDeploymentHandler()
-	if err := dcdHandler.RegisterWithManager(mgr); err != nil {
-		return fmt.Errorf("unable to register DynamoComponentDeployment webhook: %w", err)
-	}
-
-	dgdHandler := webhookvalidation.NewDynamoGraphDeploymentHandler(mgr, operatorPrincipal, runtimeConfig.GroveEnabled)
-	if err := dgdHandler.RegisterWithManager(mgr); err != nil {
-		return fmt.Errorf("unable to register DynamoGraphDeployment webhook: %w", err)
-	}
-
-	dckptHandler := webhookvalidation.NewDynamoCheckpointHandler()
-	if err := dckptHandler.RegisterWithManager(mgr); err != nil {
-		return fmt.Errorf("unable to register DynamoCheckpoint webhook: %w", err)
-	}
-
-	dmHandler := webhookvalidation.NewDynamoModelHandler()
-	if err := dmHandler.RegisterWithManager(mgr); err != nil {
-		return fmt.Errorf("unable to register DynamoModel webhook: %w", err)
-	}
-
-	dgdrHandler := webhookvalidation.NewDynamoGraphDeploymentRequestHandler(
-		isClusterWide, ptr.Deref(operatorCfg.GPU.DiscoveryEnabled, true),
-	)
-	if err := dgdrHandler.RegisterWithManager(mgr); err != nil {
-		return fmt.Errorf("unable to register DynamoGraphDeploymentRequest webhook: %w", err)
-	}
-
-	if err := ctrl.NewWebhookManagedBy(mgr, &nvidiacomv1beta1.DynamoGraphDeploymentRequest{}).
-		Complete(); err != nil {
-		return fmt.Errorf("unable to register DynamoGraphDeploymentRequest conversion webhook: %w", err)
-	}
-
-	if err := ctrl.NewWebhookManagedBy(mgr, &nvidiacomv1beta1.DynamoGraphDeployment{}).
-		Complete(); err != nil {
-		return fmt.Errorf("unable to register DynamoGraphDeployment conversion webhook: %w", err)
-	}
-
-	if err := ctrl.NewWebhookManagedBy(mgr, &nvidiacomv1beta1.DynamoComponentDeployment{}).
-		Complete(); err != nil {
-		return fmt.Errorf("unable to register DynamoComponentDeployment conversion webhook: %w", err)
-	}
-
-	if err := ctrl.NewWebhookManagedBy(mgr, &nvidiacomv1beta1.DynamoGraphDeploymentScalingAdapter{}).
-		Complete(); err != nil {
-		return fmt.Errorf("unable to register DynamoGraphDeploymentScalingAdapter conversion webhook: %w", err)
-	}
-
-	setupLog.Info("Registering defaulting webhooks")
-
-	dcdDefaulter := webhookdefaulting.NewDCDDefaulter()
-	if err := dcdDefaulter.RegisterWithManager(mgr); err != nil {
-		return fmt.Errorf("unable to register DynamoComponentDeployment defaulting webhook: %w", err)
-	}
-
-	dgdDefaulter := webhookdefaulting.NewDGDDefaulter(operatorVersion, runtimeConfig.GroveEnabled)
-	if err := dgdDefaulter.RegisterWithManager(mgr); err != nil {
-		return fmt.Errorf("unable to register DynamoGraphDeployment defaulting webhook: %w", err)
-	}
-
-	dgdrDefaulter := webhookdefaulting.NewDGDRDefaulter(operatorVersion)
-	if err := dgdrDefaulter.RegisterWithManager(mgr); err != nil {
-		return fmt.Errorf("unable to register DynamoGraphDeploymentRequest defaulting webhook: %w", err)
-	}
-
-	setupLog.Info("Registering mutation webhooks")
-
-	podCheckpointRestoreMutator := webhookmutation.NewPodCheckpointRestoreMutator(mgr.GetClient(), operatorCfg)
-	if err := podCheckpointRestoreMutator.RegisterWithManager(mgr); err != nil {
-		return fmt.Errorf("unable to register Pod checkpoint restore mutating webhook: %w", err)
+	if err := webhooksetup.SetupAll(mgr, webhooksetup.Options{
+		Config:            operatorCfg,
+		RuntimeConfig:     runtimeConfig,
+		OperatorVersion:   operatorVersion,
+		OperatorPrincipal: operatorPrincipal,
+	}); err != nil {
+		return err
 	}
 
 	setupLog.Info("Webhooks registered successfully")
