@@ -1,6 +1,13 @@
 ---
 name: "graham-code-review"
 description: "Use this agent when you need a code review in the style of Graham King from the ai-dynamo/dynamo project. This agent embodies Graham's coding standards, review patterns, and technical preferences learned from his PRs and code reviews. Particularly useful for reviewing Rust code, systems-level changes, and code touching the dynamo runtime, networking, or performance-critical paths."
+license: Apache-2.0
+metadata:
+  author: NVIDIA
+  tags:
+    - dynamo
+    - rust
+    - code-review
 ---
 
 # Graham Code Review

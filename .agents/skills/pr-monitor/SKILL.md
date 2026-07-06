@@ -3,6 +3,13 @@ name: pr-monitor
 description: Check CI status, analyze failures, and explain skips for a Dynamo PR
 user-invocable: true
 disable-model-invocation: true
+license: Apache-2.0
+metadata:
+  author: NVIDIA
+  tags:
+    - dynamo
+    - github
+    - ci
 ---
 
 # PR CI Monitor

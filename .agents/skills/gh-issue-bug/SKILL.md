@@ -1,7 +1,14 @@
 ---
-name: dynamo-bug
+name: gh-issue-bug
 description: File a GitHub bug issue against ai-dynamo/dynamo using context from the current conversation.
 user-invocable: true
+license: Apache-2.0
+metadata:
+  author: NVIDIA
+  tags:
+    - dynamo
+    - github
+    - bug-report
 ---
 
 # File a Dynamo Bug Issue

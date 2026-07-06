@@ -1,6 +1,13 @@
 ---
 name: dep-status
 description: Check Dynamo Enhancement Proposal issue status, list DEPs by lifecycle state or area, and find related DEP issues in ai-dynamo/dynamo.
+license: Apache-2.0
+metadata:
+  author: NVIDIA
+  tags:
+    - dynamo
+    - dep
+    - github
 ---
 
 # Skill: Check DEP Status

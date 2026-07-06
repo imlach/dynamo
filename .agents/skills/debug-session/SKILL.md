@@ -3,6 +3,13 @@ name: debug-session
 description: Start a debugging session with worklog file
 user-invocable: true
 disable-model-invocation: true
+license: Apache-2.0
+metadata:
+  author: NVIDIA
+  tags:
+    - dynamo
+    - debugging
+    - worklog
 ---
 
 # Start Debug Session
