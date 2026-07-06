@@ -32,8 +32,7 @@ import (
 
 const (
 	dcdDefaultingWebhookName = "dynamocomponentdeployment-defaulting-webhook"
-	// DCDDefaultingWebhookPath is the endpoint for defaulting DynamoComponentDeployments.
-	DCDDefaultingWebhookPath = "/mutate-nvidia-com-v1beta1-dynamocomponentdeployment"
+	dcdDefaultingWebhookPath = "/mutate-nvidia-com-v1beta1-dynamocomponentdeployment"
 )
 
 // DCDDefaulter is a mutating webhook handler for v1beta1 DynamoComponentDeployment.
@@ -82,6 +81,6 @@ func (d *DCDDefaulter) RegisterWithManager(mgr manager.Manager) error {
 	webhook := admission.
 		WithCustomDefaulter(mgr.GetScheme(), &nvidiacomv1beta1.DynamoComponentDeployment{}, d).
 		WithRecoverPanic(true)
-	mgr.GetWebhookServer().Register(DCDDefaultingWebhookPath, webhook)
+	mgr.GetWebhookServer().Register(dcdDefaultingWebhookPath, webhook)
 	return nil
 }

@@ -157,12 +157,16 @@ func startRuntime(opts Options) (*runtimeEnv, error) {
 	if runtimeConfig == nil {
 		runtimeConfig = &commoncontroller.RuntimeConfig{}
 	}
+	webhookOptions, err := webhookInstallOptions(opts)
+	if err != nil {
+		return nil, err
+	}
 	testEnv := &envtest.Environment{
 		Scheme:                scheme,
 		CRDDirectoryPaths:     crdDirectoryPaths(opts),
 		ErrorIfCRDPathMissing: false,
 		BinaryAssetsDirectory: binaryAssetsDirectory(opts),
-		WebhookInstallOptions: webhookInstallOptions(opts),
+		WebhookInstallOptions: webhookOptions,
 	}
 	cfg, err := testEnv.Start()
 	if err != nil {
@@ -191,15 +195,18 @@ func startRuntime(opts Options) (*runtimeEnv, error) {
 	return rt, nil
 }
 
-func webhookInstallOptions(opts Options) envtest.WebhookInstallOptions {
+func webhookInstallOptions(opts Options) (envtest.WebhookInstallOptions, error) {
 	if !opts.Admission {
-		return envtest.WebhookInstallOptions{}
+		return envtest.WebhookInstallOptions{}, nil
 	}
-	mutating, validating := webhooksetup.AdmissionWebhooks()
+	mutating, validating, err := helmWebhookConfigurations()
+	if err != nil {
+		return envtest.WebhookInstallOptions{}, err
+	}
 	return envtest.WebhookInstallOptions{
 		MutatingWebhooks:   mutating,
 		ValidatingWebhooks: validating,
-	}
+	}, nil
 }
 
 func (e *runtimeEnv) startWebhookManager() error {

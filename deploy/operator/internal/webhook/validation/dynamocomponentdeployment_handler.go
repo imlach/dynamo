@@ -34,8 +34,7 @@ import (
 const (
 	// DynamoComponentDeploymentWebhookName is the name of the validating webhook handler for DynamoComponentDeployment.
 	DynamoComponentDeploymentWebhookName = "dynamocomponentdeployment-validating-webhook"
-	// DynamoComponentDeploymentWebhookPath is the endpoint for validating DynamoComponentDeployments.
-	DynamoComponentDeploymentWebhookPath = "/validate-nvidia-com-v1alpha1-dynamocomponentdeployment"
+	dynamoComponentDeploymentWebhookPath = "/validate-nvidia-com-v1alpha1-dynamocomponentdeployment"
 )
 
 // DynamoComponentDeploymentHandler is a handler for validating DynamoComponentDeployment resources.
@@ -145,7 +144,7 @@ func (h *DynamoComponentDeploymentHandler) RegisterWithManager(mgr manager.Manag
 	webhook := admission.
 		WithCustomValidator(mgr.GetScheme(), &nvidiacomv1alpha1.DynamoComponentDeployment{}, observedValidator).
 		WithRecoverPanic(true)
-	mgr.GetWebhookServer().Register(DynamoComponentDeploymentWebhookPath, webhook)
+	mgr.GetWebhookServer().Register(dynamoComponentDeploymentWebhookPath, webhook)
 	return nil
 }
 

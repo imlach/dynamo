@@ -40,11 +40,12 @@ func TestIsolated(t *testing.T) {
 
 ## Webhooks
 
-The envtest API server installs mutating and validating webhook configurations
-when admission is enabled. A dedicated webhook manager registers the production
-handlers via `webhooksetup.SetupAll`, including conversion endpoints. Therefore
-normal `Client` CRUD reaches the API server, CRD CEL validation, and production
-webhook code.
+The envtest API server renders the production Helm webhook configuration and
+installs its mutating and validating webhook objects when admission is enabled.
+A dedicated webhook manager registers the production handlers via
+`webhooksetup.SetupAll`, including conversion endpoints. Therefore normal
+`Client` CRUD reaches the API server, CRD CEL validation, and production webhook
+code.
 
 The webhook manager is separate from controller managers. It runs for the
 lifetime of the environment and is the only always-on manager.

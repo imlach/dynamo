@@ -29,8 +29,7 @@ import (
 
 const (
 	podCheckpointRestoreWebhookName = "pod-checkpoint-restore-mutating-webhook"
-	// PodCheckpointRestoreWebhookPath is the endpoint for mutating checkpoint-restore Pods.
-	PodCheckpointRestoreWebhookPath = "/mutate-core-v1-pod-checkpoint-restore"
+	podCheckpointRestoreWebhookPath = "/mutate-core-v1-pod-checkpoint-restore"
 )
 
 type PodCheckpointRestoreMutator struct {
@@ -45,7 +44,7 @@ func NewPodCheckpointRestoreMutator(client ctrlclient.Client, config *configv1al
 
 func (h *PodCheckpointRestoreMutator) RegisterWithManager(mgr manager.Manager) error {
 	h.scheme = mgr.GetScheme()
-	mgr.GetWebhookServer().Register(PodCheckpointRestoreWebhookPath, (&admission.Webhook{
+	mgr.GetWebhookServer().Register(podCheckpointRestoreWebhookPath, (&admission.Webhook{
 		Handler: h,
 	}).WithRecoverPanic(true))
 	return nil

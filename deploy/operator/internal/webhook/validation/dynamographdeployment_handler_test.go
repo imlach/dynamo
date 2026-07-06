@@ -221,8 +221,8 @@ func TestDynamoGraphDeploymentHandlerRegisterWithManager(t *testing.T) {
 	}
 
 	for _, path := range []string{
-		DynamoGraphDeploymentV1Alpha1WebhookPath,
-		DynamoGraphDeploymentV1Beta1WebhookPath,
+		dynamoGraphDeploymentV1Alpha1WebhookPath,
+		dynamoGraphDeploymentV1Beta1WebhookPath,
 	} {
 		request := httptest.NewRequest("POST", path, nil)
 		_, pattern := server.WebhookMux().Handler(request)

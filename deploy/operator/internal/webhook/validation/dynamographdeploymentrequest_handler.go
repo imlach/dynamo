@@ -34,8 +34,7 @@ import (
 const (
 	// DynamoGraphDeploymentRequestWebhookName is the name of the validating webhook handler for DynamoGraphDeploymentRequest.
 	DynamoGraphDeploymentRequestWebhookName = "dynamographdeploymentrequest-validating-webhook"
-	// DynamoGraphDeploymentRequestWebhookPath is the endpoint for validating DynamoGraphDeploymentRequests.
-	DynamoGraphDeploymentRequestWebhookPath = "/validate-nvidia-com-v1beta1-dynamographdeploymentrequest"
+	dynamoGraphDeploymentRequestWebhookPath = "/validate-nvidia-com-v1beta1-dynamographdeploymentrequest"
 )
 
 // DynamoGraphDeploymentRequestHandler is a handler for validating DynamoGraphDeploymentRequest resources.
@@ -137,7 +136,7 @@ func (h *DynamoGraphDeploymentRequestHandler) RegisterWithManager(mgr manager.Ma
 	webhook := admission.
 		WithCustomValidator(mgr.GetScheme(), &nvidiacomv1beta1.DynamoGraphDeploymentRequest{}, observedValidator).
 		WithRecoverPanic(true)
-	mgr.GetWebhookServer().Register(DynamoGraphDeploymentRequestWebhookPath, webhook)
+	mgr.GetWebhookServer().Register(dynamoGraphDeploymentRequestWebhookPath, webhook)
 	return nil
 }
 
