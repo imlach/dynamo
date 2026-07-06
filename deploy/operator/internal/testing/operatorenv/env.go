@@ -41,19 +41,29 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 )
 
+// Options configures an Env.
 type Options struct {
-	Admission  bool
+	// Admission installs mutating and validating webhook configurations.
+	Admission bool
+	// Conversion starts the conversion webhook server.
 	Conversion bool
 
+	// OperatorVersion is passed to production webhook defaulting handlers.
 	OperatorVersion string
-	Config          *configv1alpha1.OperatorConfiguration
-	RuntimeConfig   *commoncontroller.RuntimeConfig
+	// Config overrides the default operator configuration.
+	Config *configv1alpha1.OperatorConfiguration
+	// RuntimeConfig overrides the default operator runtime configuration.
+	RuntimeConfig *commoncontroller.RuntimeConfig
 
-	CRDDirectoryPaths     []string
+	// CRDDirectoryPaths overrides the default CRD directories loaded by envtest.
+	CRDDirectoryPaths []string
+	// BinaryAssetsDirectory overrides the envtest Kubernetes binary directory.
 	BinaryAssetsDirectory string
-	EventuallyTimeout     time.Duration
+	// EventuallyTimeout controls startup and cache synchronization timeouts.
+	EventuallyTimeout time.Duration
 }
 
+// Env manages a shared or isolated envtest API server.
 type Env struct {
 	opts Options
 
@@ -64,10 +74,12 @@ type Env struct {
 	once      sync.Once
 }
 
+// New returns an Env configured with opts.
 func New(opts Options) *Env {
 	return &Env{opts: normalizeOptions(opts)}
 }
 
+// RunM runs m and stops the lazily created shared environment afterwards.
 func (e *Env) RunM(m *testing.M) int {
 	e.mu.Lock()
 	e.runM = true
@@ -83,6 +95,7 @@ func (e *Env) RunM(m *testing.M) int {
 	return code
 }
 
+// RunT starts an isolated environment that is stopped during test cleanup.
 func (e *Env) RunT(tb testing.TB) *TestEnv {
 	tb.Helper()
 	rt, err := startRuntime(e.opts)
@@ -97,6 +110,8 @@ func (e *Env) RunT(tb testing.TB) *TestEnv {
 	return newTestEnv(tb, rt, e.opts)
 }
 
+// ForTest returns a namespace-scoped test environment backed by the shared API server.
+// RunM must wrap the package test run before ForTest is called.
 func (e *Env) ForTest(tb testing.TB) *TestEnv {
 	tb.Helper()
 	e.mu.Lock()
@@ -231,6 +246,7 @@ func (e *runtimeEnv) stop() error {
 	return errors.Join(errs...)
 }
 
+// TestEnv scopes test clients and controller managers to one namespace.
 type TestEnv struct {
 	tb        testing.TB
 	rt        *runtimeEnv
@@ -253,22 +269,27 @@ func newTestEnv(tb testing.TB, rt *runtimeEnv, opts Options) *TestEnv {
 	return &TestEnv{tb: tb, rt: rt, namespace: name, opts: opts}
 }
 
+// Namespace returns the namespace dedicated to this test.
 func (e *TestEnv) Namespace() string {
 	return e.namespace
 }
 
+// Client returns a client configured for the envtest API server.
 func (e *TestEnv) Client() client.Client {
 	return e.rt.client
 }
 
+// RESTConfig returns the API server REST configuration.
 func (e *TestEnv) RESTConfig() *rest.Config {
 	return e.rt.config
 }
 
+// OperatorConfig returns the environment's effective operator configuration.
 func (e *TestEnv) OperatorConfig() *configv1alpha1.OperatorConfiguration {
 	return e.rt.operatorCfg
 }
 
+// RuntimeConfig returns the environment's effective runtime configuration.
 func (e *TestEnv) RuntimeConfig() *commoncontroller.RuntimeConfig {
 	return e.rt.runtimeConfig
 }
@@ -278,6 +299,7 @@ func (e *TestEnv) ScaleClient() (scale.ScalesGetter, error) {
 	return newScaleClient(e.rt.config)
 }
 
+// StartManager starts a namespace-scoped controller manager configured by setup.
 func (e *TestEnv) StartManager(setup func(ctrl.Manager) error) {
 	e.tb.Helper()
 	mgr, err := ctrl.NewManager(e.rt.config, ctrl.Options{

@@ -20,6 +20,7 @@ package controller
 import (
 	"context"
 	"strings"
+	"testing"
 	"time"
 
 	configv1alpha1 "github.com/ai-dynamo/dynamo/deploy/operator/api/config/v1alpha1"
@@ -38,6 +39,7 @@ import (
 	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
@@ -55,6 +57,65 @@ func (m *MockRBACManager) EnsureServiceAccountWithRBAC(ctx context.Context, targ
 		return m.EnsureServiceAccountWithRBACFunc(ctx, targetNamespace, serviceAccountName, clusterRoleName)
 	}
 	return nil
+}
+
+func TestDynamoGraphDeploymentRequestReconcilerRejectsImmutableSpecChange(t *testing.T) {
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	if err := nvidiacomv1beta1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add DynamoGraphDeploymentRequest scheme: %v", err)
+	}
+
+	t.Log("Create a DGDR representing a post-profiling spec update")
+	dgdr := &nvidiacomv1beta1.DynamoGraphDeploymentRequest{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "immutable-spec-change",
+			Namespace:  "default",
+			Generation: 2,
+			Finalizers: []string{"nvidia.com/finalizer"},
+		},
+		Spec: nvidiacomv1beta1.DynamoGraphDeploymentRequestSpec{
+			Model:   "modified-model",
+			Backend: "vllm",
+			Image:   "test-profiler:latest",
+		},
+		Status: nvidiacomv1beta1.DynamoGraphDeploymentRequestStatus{
+			ObservedGeneration: 1,
+			Phase:              nvidiacomv1beta1.DGDRPhaseProfiling,
+		},
+	}
+	recorder := record.NewFakeRecorder(1)
+	reconciler := &DynamoGraphDeploymentRequestReconciler{
+		Client:   fake.NewClientBuilder().WithScheme(scheme).WithObjects(dgdr).Build(),
+		Recorder: recorder,
+	}
+
+	t.Log("Reconcile the stale generation")
+	_, err := reconciler.Reconcile(ctx, reconcile.Request{
+		NamespacedName: types.NamespacedName{Name: dgdr.Name, Namespace: dgdr.Namespace},
+	})
+	if err != nil {
+		t.Fatalf("reconcile immutable spec change: %v", err)
+	}
+
+	t.Log("Assert the controller preserves the immutable phase and observed generation")
+	var got nvidiacomv1beta1.DynamoGraphDeploymentRequest
+	if err := reconciler.Get(ctx, types.NamespacedName{Name: dgdr.Name, Namespace: dgdr.Namespace}, &got); err != nil {
+		t.Fatalf("get reconciled DGDR: %v", err)
+	}
+	if got.Status.ObservedGeneration != 1 {
+		t.Fatalf("observed generation = %d, want 1", got.Status.ObservedGeneration)
+	}
+	if got.Status.Phase != nvidiacomv1beta1.DGDRPhaseProfiling {
+		t.Fatalf("phase = %q, want %q", got.Status.Phase, nvidiacomv1beta1.DGDRPhaseProfiling)
+	}
+
+	t.Log("Assert the controller emits the immutable-spec event")
+	event := <-recorder.Events
+	wantEvent := "Warning SpecChangeRejected Cannot modify spec in phase 'Profiling'. DynamoGraphDeploymentRequest is immutable once profiling starts. Create a new resource with a different name instead."
+	if event != wantEvent {
+		t.Fatalf("event = %q, want %q", event, wantEvent)
+	}
 }
 
 var _ = Describe("DynamoGraphDeploymentRequest Controller", func() {
@@ -1030,27 +1091,27 @@ spec:
 			Expect(k8sClient.Create(ctx, dgdr)).Should(Succeed())
 			defer func() { _ = k8sClient.Delete(ctx, dgdr) }()
 
-			// Reconcile to initialize
+			GinkgoT().Log("Initialize the admitted DGDR")
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Name: dgdrName, Namespace: namespace},
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Capture the admitted resource before attempting the immutable update.
+			GinkgoT().Log("Capture the admitted DGDR before the immutable update")
 			var current nvidiacomv1beta1.DynamoGraphDeploymentRequest
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: dgdrName, Namespace: namespace}, &current)).Should(Succeed())
 			initialGeneration := current.Generation
 
-			// Manually set state to Profiling to simulate in-progress profiling
+			GinkgoT().Log("Set the DGDR status to Profiling")
 			current.Status.Phase = nvidiacomv1beta1.DGDRPhaseProfiling
 			Expect(k8sClient.Status().Update(ctx, &current)).Should(Succeed())
 
-			// The validating admission webhook must reject changes once profiling begins.
+			GinkgoT().Log("Attempt a spec update through the validating admission webhook")
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: dgdrName, Namespace: namespace}, &current)).Should(Succeed())
 			current.Spec.Model = "modified-model"
 			Expect(k8sClient.Update(ctx, &current)).Should(MatchError(ContainSubstring("spec updates are forbidden while the resource is in phase \"Profiling\"")))
 
-			// The rejected update must leave the resource untouched.
+			GinkgoT().Log("Verify the rejected update leaves the API object unchanged")
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: dgdrName, Namespace: namespace}, &current)).Should(Succeed())
 			Expect(current.Generation).Should(Equal(initialGeneration))
 			Expect(current.Spec.Model).Should(Equal("test-model"))
