@@ -60,7 +60,7 @@ func (m *MockRBACManager) EnsureServiceAccountWithRBAC(ctx context.Context, targ
 }
 
 func TestDynamoGraphDeploymentRequestReconcilerRejectsImmutableSpecChange(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	scheme := runtime.NewScheme()
 	if err := nvidiacomv1beta1.AddToScheme(scheme); err != nil {
 		t.Fatalf("add DynamoGraphDeploymentRequest scheme: %v", err)
@@ -111,7 +111,14 @@ func TestDynamoGraphDeploymentRequestReconcilerRejectsImmutableSpecChange(t *tes
 	}
 
 	t.Log("Assert the controller emits the immutable-spec event")
-	event := <-recorder.Events
+	eventCtx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	var event string
+	select {
+	case event = <-recorder.Events:
+	case <-eventCtx.Done():
+		t.Fatalf("wait for immutable-spec event: %v", eventCtx.Err())
+	}
 	wantEvent := "Warning SpecChangeRejected Cannot modify spec in phase 'Profiling'. DynamoGraphDeploymentRequest is immutable once profiling starts. Create a new resource with a different name instead."
 	if event != wantEvent {
 		t.Fatalf("event = %q, want %q", event, wantEvent)
