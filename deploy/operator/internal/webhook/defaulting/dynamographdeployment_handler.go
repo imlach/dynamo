@@ -35,9 +35,11 @@ import (
 )
 
 const (
-	dgdDefaultingWebhookName         = "dynamographdeployment-defaulting-webhook"
-	dgdV1Alpha1DefaultingWebhookPath = "/mutate-nvidia-com-v1alpha1-dynamographdeployment"
-	dgdV1Beta1DefaultingWebhookPath  = "/mutate/nvidia.com/v1beta1/dynamographdeployments"
+	dgdDefaultingWebhookName = "dynamographdeployment-defaulting-webhook"
+	// DGDV1Alpha1DefaultingWebhookPath is the v1alpha1 defaulting endpoint for DynamoGraphDeployments.
+	DGDV1Alpha1DefaultingWebhookPath = "/mutate-nvidia-com-v1alpha1-dynamographdeployment"
+	// DGDV1Beta1DefaultingWebhookPath is the v1beta1 defaulting endpoint for DynamoGraphDeployments.
+	DGDV1Beta1DefaultingWebhookPath = "/mutate/nvidia.com/v1beta1/dynamographdeployments"
 )
 
 // DGDDefaulter is a mutating webhook handler that stamps DynamoGraphDeployments
@@ -137,7 +139,7 @@ func (d *DGDDefaulter) RegisterWithManager(mgr manager.Manager) error {
 	betaWebhook := admission.
 		WithCustomDefaulter(mgr.GetScheme(), &nvidiacomv1beta1.DynamoGraphDeployment{}, d).
 		WithRecoverPanic(true)
-	mgr.GetWebhookServer().Register(dgdV1Beta1DefaultingWebhookPath, betaWebhook)
+	mgr.GetWebhookServer().Register(DGDV1Beta1DefaultingWebhookPath, betaWebhook)
 
 	// TODO(1.5): Remove the v1alpha1 endpoint and defaulter after 1.3 is no longer
 	// a supported upgrade or rollback target.
@@ -145,7 +147,7 @@ func (d *DGDDefaulter) RegisterWithManager(mgr manager.Manager) error {
 	alphaWebhook := admission.
 		WithCustomDefaulter(mgr.GetScheme(), &nvidiacomv1alpha1.DynamoGraphDeployment{}, alphaDefaulter).
 		WithRecoverPanic(true)
-	mgr.GetWebhookServer().Register(dgdV1Alpha1DefaultingWebhookPath, alphaWebhook)
+	mgr.GetWebhookServer().Register(DGDV1Alpha1DefaultingWebhookPath, alphaWebhook)
 	return nil
 }
 

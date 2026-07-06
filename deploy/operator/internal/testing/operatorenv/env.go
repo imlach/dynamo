@@ -25,7 +25,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/rand"
-	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/discovery/cached/memory"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
@@ -192,6 +191,17 @@ func startRuntime(opts Options) (*runtimeEnv, error) {
 	return rt, nil
 }
 
+func webhookInstallOptions(opts Options) envtest.WebhookInstallOptions {
+	if !opts.Admission {
+		return envtest.WebhookInstallOptions{}
+	}
+	mutating, validating := webhooksetup.AdmissionWebhooks()
+	return envtest.WebhookInstallOptions{
+		MutatingWebhooks:   mutating,
+		ValidatingWebhooks: validating,
+	}
+}
+
 func (e *runtimeEnv) startWebhookManager() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	server := webhook.NewServer(webhook.Options{
@@ -220,9 +230,14 @@ func (e *runtimeEnv) startWebhookManager() error {
 	go func() {
 		done <- mgr.Start(ctx)
 	}()
-	if err := waitForWebhookServer(ctx, mgr.GetWebhookServer()); err != nil {
+	managerStopped, err := waitForWebhookServer(ctx, mgr.GetWebhookServer(), done)
+	if err != nil {
 		cancel()
-		<-done
+		if !managerStopped {
+			if managerErr := <-done; managerErr != nil && !errors.Is(managerErr, context.Canceled) {
+				return fmt.Errorf("webhook manager exited before server started: %w", managerErr)
+			}
+		}
 		return err
 	}
 	e.cancel = cancel
@@ -326,7 +341,9 @@ func (e *TestEnv) StartManager(setup func(ctrl.Manager) error) {
 	defer syncCancel()
 	if !mgr.GetCache().WaitForCacheSync(syncCtx) {
 		cancel()
-		<-done
+		if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
+			e.tb.Fatalf("manager exited before cache sync: %v", err)
+		}
 		e.tb.Fatal("manager cache did not sync")
 	}
 	e.tb.Cleanup(func() {
@@ -335,6 +352,39 @@ func (e *TestEnv) StartManager(setup func(ctrl.Manager) error) {
 			e.tb.Errorf("manager stopped with error: %v", err)
 		}
 	})
+}
+
+func waitForWebhookServer(ctx context.Context, server webhook.Server, done <-chan error) (bool, error) {
+	waitCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+
+	startedChecker := server.StartedChecker()
+	for {
+		select {
+		case err := <-done:
+			return true, webhookManagerStartError(err)
+		case <-waitCtx.Done():
+			select {
+			case err := <-done:
+				return true, webhookManagerStartError(err)
+			default:
+				return false, waitCtx.Err()
+			}
+		case <-ticker.C:
+			if err := startedChecker((*http.Request)(nil)); err == nil {
+				return false, nil
+			}
+		}
+	}
+}
+
+func webhookManagerStartError(err error) error {
+	if err == nil {
+		return errors.New("webhook manager exited before server started")
+	}
+	return fmt.Errorf("webhook manager exited before server started: %w", err)
 }
 
 func normalizeOptions(opts Options) Options {
@@ -409,13 +459,4 @@ func operatorRoot() string {
 		panic("operatorenv: runtime.Caller failed")
 	}
 	return filepath.Clean(filepath.Join(filepath.Dir(file), "..", "..", ".."))
-}
-
-func waitForWebhookServer(ctx context.Context, server webhook.Server) error {
-	waitCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	return wait.PollUntilContextTimeout(waitCtx, 50*time.Millisecond, 10*time.Second, true, func(ctx context.Context) (bool, error) {
-		err := server.StartedChecker()((*http.Request)(nil))
-		return err == nil, nil
-	})
 }

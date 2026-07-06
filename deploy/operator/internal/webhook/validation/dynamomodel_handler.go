@@ -34,7 +34,8 @@ import (
 const (
 	// DynamoModelWebhookName is the name of the validating webhook handler for DynamoModel.
 	DynamoModelWebhookName = "dynamomodel-validating-webhook"
-	dynamoModelWebhookPath = "/validate-nvidia-com-v1alpha1-dynamomodel"
+	// DynamoModelWebhookPath is the endpoint for validating DynamoModels.
+	DynamoModelWebhookPath = "/validate-nvidia-com-v1alpha1-dynamomodel"
 )
 
 // DynamoModelHandler is a handler for validating DynamoModel resources.
@@ -131,7 +132,7 @@ func (h *DynamoModelHandler) RegisterWithManager(mgr manager.Manager) error {
 	webhook := admission.
 		WithCustomValidator(mgr.GetScheme(), &nvidiacomv1alpha1.DynamoModel{}, observedValidator).
 		WithRecoverPanic(true)
-	mgr.GetWebhookServer().Register(dynamoModelWebhookPath, webhook)
+	mgr.GetWebhookServer().Register(DynamoModelWebhookPath, webhook)
 	return nil
 }
 

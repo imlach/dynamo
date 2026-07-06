@@ -34,7 +34,8 @@ import (
 
 const (
 	DynamoCheckpointWebhookName = "dynamocheckpoint-validating-webhook"
-	dynamoCheckpointWebhookPath = "/validate-nvidia-com-v1alpha1-dynamocheckpoint"
+	// DynamoCheckpointWebhookPath is the endpoint for validating DynamoCheckpoints.
+	DynamoCheckpointWebhookPath = "/validate-nvidia-com-v1alpha1-dynamocheckpoint"
 )
 
 type DynamoCheckpointHandler struct{}
@@ -81,7 +82,7 @@ func (h *DynamoCheckpointHandler) RegisterWithManager(mgr manager.Manager) error
 	webhook := admission.
 		WithCustomValidator(mgr.GetScheme(), &nvidiacomv1alpha1.DynamoCheckpoint{}, observedValidator).
 		WithRecoverPanic(true)
-	mgr.GetWebhookServer().Register(dynamoCheckpointWebhookPath, webhook)
+	mgr.GetWebhookServer().Register(DynamoCheckpointWebhookPath, webhook)
 	return nil
 }
 

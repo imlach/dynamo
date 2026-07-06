@@ -15,6 +15,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 )
 
+const backendFrameworkVLLM = "vllm"
+
 func TestDGDV1Beta1ConversionSmoke(t *testing.T) {
 	ctx := context.Background()
 	env := sharedEnv.ForTest(t)
@@ -26,7 +28,7 @@ func TestDGDV1Beta1ConversionSmoke(t *testing.T) {
 			Namespace: env.Namespace(),
 		},
 		Spec: nvidiav1beta1.DynamoGraphDeploymentSpec{
-			BackendFramework: "vllm",
+			BackendFramework: backendFrameworkVLLM,
 			Components: []nvidiav1beta1.DynamoComponentDeploymentSharedSpec{{
 				ComponentName: "frontend",
 				ComponentType: nvidiav1beta1.ComponentTypeFrontend,
@@ -45,8 +47,8 @@ func TestDGDV1Beta1ConversionSmoke(t *testing.T) {
 	}
 
 	t.Log("Assert the converted DGD uses the v1alpha1 service map shape")
-	if alpha.Spec.BackendFramework != "vllm" {
-		t.Fatalf("v1alpha1 backendFramework = %q, want vllm", alpha.Spec.BackendFramework)
+	if alpha.Spec.BackendFramework != backendFrameworkVLLM {
+		t.Fatalf("v1alpha1 backendFramework = %q, want %q", alpha.Spec.BackendFramework, backendFrameworkVLLM)
 	}
 	if alpha.Spec.Services["frontend"] == nil {
 		t.Fatalf("v1alpha1 services missing converted frontend component: %#v", alpha.Spec.Services)

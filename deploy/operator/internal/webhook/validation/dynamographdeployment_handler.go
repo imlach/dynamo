@@ -37,9 +37,11 @@ import (
 
 const (
 	// DynamoGraphDeploymentWebhookName is the name of the validating webhook handler for DynamoGraphDeployment.
-	DynamoGraphDeploymentWebhookName         = "dynamographdeployment-validating-webhook"
-	dynamoGraphDeploymentV1Alpha1WebhookPath = "/validate-nvidia-com-v1alpha1-dynamographdeployment"
-	dynamoGraphDeploymentV1Beta1WebhookPath  = "/validate/nvidia.com/v1beta1/dynamographdeployments"
+	DynamoGraphDeploymentWebhookName = "dynamographdeployment-validating-webhook"
+	// DynamoGraphDeploymentV1Alpha1WebhookPath is the v1alpha1 validation endpoint for DynamoGraphDeployments.
+	DynamoGraphDeploymentV1Alpha1WebhookPath = "/validate-nvidia-com-v1alpha1-dynamographdeployment"
+	// DynamoGraphDeploymentV1Beta1WebhookPath is the v1beta1 validation endpoint for DynamoGraphDeployments.
+	DynamoGraphDeploymentV1Beta1WebhookPath = "/validate/nvidia.com/v1beta1/dynamographdeployments"
 )
 
 // DynamoGraphDeploymentHandler is a handler for validating DynamoGraphDeployment resources.
@@ -199,7 +201,7 @@ func (h *DynamoGraphDeploymentHandler) RegisterWithManager(mgr manager.Manager) 
 	h.registerWithManager(
 		mgr,
 		&nvidiacomv1beta1.DynamoGraphDeployment{},
-		dynamoGraphDeploymentV1Beta1WebhookPath,
+		DynamoGraphDeploymentV1Beta1WebhookPath,
 		h,
 	)
 
@@ -209,7 +211,7 @@ func (h *DynamoGraphDeploymentHandler) RegisterWithManager(mgr manager.Manager) 
 	h.registerWithManager(
 		mgr,
 		&nvidiacomv1alpha1.DynamoGraphDeployment{},
-		dynamoGraphDeploymentV1Alpha1WebhookPath,
+		DynamoGraphDeploymentV1Alpha1WebhookPath,
 		alphaHandler,
 	)
 	return nil

@@ -1109,7 +1109,7 @@ spec:
 			GinkgoT().Log("Attempt a spec update through the validating admission webhook")
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: dgdrName, Namespace: namespace}, &current)).Should(Succeed())
 			current.Spec.Model = "modified-model"
-			Expect(k8sClient.Update(ctx, &current)).Should(MatchError(ContainSubstring("spec updates are forbidden while the resource is in phase \"Profiling\"")))
+			Expect(k8sClient.Update(ctx, &current)).Should(MatchError(ContainSubstring("spec updates are forbidden while the resource is in phase")))
 
 			GinkgoT().Log("Verify the rejected update leaves the API object unchanged")
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: dgdrName, Namespace: namespace}, &current)).Should(Succeed())

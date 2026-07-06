@@ -32,7 +32,8 @@ import (
 
 const (
 	dgdrDefaultingWebhookName = "dynamographdeploymentrequest-defaulting-webhook"
-	dgdrDefaultingWebhookPath = "/mutate-nvidia-com-v1beta1-dynamographdeploymentrequest"
+	// DGDRDefaultingWebhookPath is the endpoint for defaulting DynamoGraphDeploymentRequests.
+	DGDRDefaultingWebhookPath = "/mutate-nvidia-com-v1beta1-dynamographdeploymentrequest"
 
 	// defaultImage is the default profiler image used when spec.image is not set.
 	// Default image derivation is only supported for public release versions (1.0.0+).
@@ -113,6 +114,6 @@ func (d *DGDRDefaulter) RegisterWithManager(mgr manager.Manager) error {
 	webhook := admission.
 		WithCustomDefaulter(mgr.GetScheme(), &nvidiacomv1beta1.DynamoGraphDeploymentRequest{}, d).
 		WithRecoverPanic(true)
-	mgr.GetWebhookServer().Register(dgdrDefaultingWebhookPath, webhook)
+	mgr.GetWebhookServer().Register(DGDRDefaultingWebhookPath, webhook)
 	return nil
 }
