@@ -25,3 +25,7 @@
 # Refuses connections from GitHub runners (consistent across retries and
 # reruns). Loads fine from a normal browser.
 ^https://book\.kubebuilder\.io/
+
+# Intermittently unreachable from GitHub runners (timeouts and connection
+# failures across independent runs). Loads fine from a normal browser.
+^https://cert-manager\.io/
