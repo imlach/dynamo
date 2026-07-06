@@ -9,6 +9,7 @@ use serde::Deserialize;
 use thiserror::Error;
 
 use super::config::RouterQueuePolicy;
+use super::session_aware::SessionAwareConfig;
 
 const DEFAULT_PREFILL_BUSY_THRESHOLD_FRAC: f64 = 16.0;
 const SYNTHETIC_POLICY_CLASS: &str = "default";
@@ -63,6 +64,7 @@ impl PolicyClassConfig {
 pub struct PolicyProfile {
     classes: Vec<PolicyClassConfig>,
     classifier: PolicyClassifier,
+    session_aware: Option<SessionAwareConfig>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -126,6 +128,7 @@ impl PolicyProfile {
         Self {
             classes: vec![class],
             classifier: PolicyClassifier::SyntheticSingle { class_index: 0 },
+            session_aware: None,
         }
     }
 
@@ -159,12 +162,17 @@ impl PolicyProfile {
     pub fn class(&self, index: usize) -> &PolicyClassConfig {
         &self.classes[index]
     }
+
+    pub fn session_aware(&self) -> Option<&SessionAwareConfig> {
+        self.session_aware.as_ref()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RouterPolicyConfig {
     root: Option<PolicyProfile>,
     models: HashMap<String, PolicyProfile>,
+    session_aware: Option<SessionAwareConfig>,
 }
 
 impl RouterPolicyConfig {
@@ -201,17 +209,23 @@ impl RouterPolicyConfig {
     ) -> PolicyProfile {
         // Model profiles replace the root wholesale; the synthetic profile is
         // constructed only when neither configured profile applies.
-        model_name
+        let mut profile = model_name
             .and_then(|name| self.models.get(name))
             .or(self.root.as_ref())
             .cloned()
-            .unwrap_or_else(|| PolicyProfile::synthetic(fallback_threshold, fallback_policy))
+            .unwrap_or_else(|| PolicyProfile::synthetic(fallback_threshold, fallback_policy));
+        if profile.session_aware.is_none() {
+            profile.session_aware.clone_from(&self.session_aware);
+        }
+        profile
     }
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawRouterPolicyConfig {
+    #[serde(default)]
+    session_aware: Option<SessionAwareConfig>,
     #[serde(default)]
     default_policy_family: Option<String>,
     #[serde(default)]
@@ -224,6 +238,9 @@ struct RawRouterPolicyConfig {
 
 impl RawRouterPolicyConfig {
     fn resolve(self) -> Result<RouterPolicyConfig, RouterPolicyConfigError> {
+        if let Some(config) = self.session_aware.as_ref() {
+            config.validate("root")?;
+        }
         let root = match (
             self.default_policy_family,
             self.policy_classes,
@@ -233,6 +250,7 @@ impl RawRouterPolicyConfig {
             (Some(default_policy_family), Some(policy_classes), Some(uncached_isl_buckets)) => {
                 Some(resolve_profile(
                     RawPolicyProfile {
+                        session_aware: self.session_aware.clone(),
                         default_policy_family,
                         policy_classes,
                         uncached_isl_buckets,
@@ -258,20 +276,26 @@ impl RawRouterPolicyConfig {
             models.insert(model_name, resolved);
         }
 
-        if root.is_none() && models.is_empty() {
+        if root.is_none() && models.is_empty() && self.session_aware.is_none() {
             return Err(RouterPolicyConfigError::Validation(
                 "router policy config must define a root profile or at least one model profile"
                     .to_string(),
             ));
         }
 
-        Ok(RouterPolicyConfig { root, models })
+        Ok(RouterPolicyConfig {
+            root,
+            models,
+            session_aware: self.session_aware,
+        })
     }
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawPolicyProfile {
+    #[serde(default)]
+    session_aware: Option<SessionAwareConfig>,
     default_policy_family: String,
     policy_classes: Vec<RawPolicyClassConfig>,
     uncached_isl_buckets: Vec<RawUncachedIslBucket>,
@@ -311,6 +335,9 @@ fn resolve_profile(
     profile: RawPolicyProfile,
     location: &str,
 ) -> Result<PolicyProfile, RouterPolicyConfigError> {
+    if let Some(config) = profile.session_aware.as_ref() {
+        config.validate(location)?;
+    }
     validate_identifier(&profile.default_policy_family, "policy family", location)?;
     if profile.policy_classes.is_empty() {
         return Err(RouterPolicyConfigError::Validation(format!(
@@ -416,6 +443,7 @@ fn resolve_profile(
                 .map(|class_index| class_index.expect("validated complete policy matrix"))
                 .collect(),
         }),
+        session_aware: profile.session_aware,
     })
 }
 
@@ -828,6 +856,28 @@ policy_classes:
                 "unexpectedly accepted {yaml}"
             );
         }
+    }
+
+    #[test]
+    fn resolves_opt_in_session_aware_overlay() {
+        let config = RouterPolicyConfig::from_yaml(
+            r#"
+session_aware:
+  pause_threshold: 0.9
+  pause_target: 0.7
+  scheduler_interval_seconds: 2.0
+"#,
+        )
+        .unwrap();
+
+        let profile = config.resolve_profile(None, None, RouterQueuePolicy::Fcfs);
+        let session_aware = profile.session_aware().unwrap();
+        assert_eq!(session_aware.pause_threshold, 0.9);
+        assert_eq!(session_aware.pause_target, 0.7);
+        assert_eq!(
+            session_aware.scheduler_interval(),
+            std::time::Duration::from_secs(2)
+        );
     }
 
     #[test]

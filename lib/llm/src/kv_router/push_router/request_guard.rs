@@ -26,28 +26,43 @@ struct RequestCleanup {
     chooser: Arc<KvRouter>,
     context_id: String,
     scheduler_tracked: bool,
+    final_session_id: Option<String>,
+    completion_tokens: usize,
     freed: bool,
 }
 
 impl RequestCleanup {
-    fn new(chooser: Arc<KvRouter>, context_id: String, scheduler_tracked: bool) -> Self {
+    fn new(
+        chooser: Arc<KvRouter>,
+        context_id: String,
+        scheduler_tracked: bool,
+        final_session_id: Option<String>,
+    ) -> Self {
         Self {
             chooser,
             context_id,
             scheduler_tracked,
+            final_session_id,
+            completion_tokens: 0,
             freed: false,
         }
     }
 
     async fn finish(&mut self) {
         if self.scheduler_tracked
-            && let Err(error) = self.chooser.free(&self.context_id).await
+            && let Err(error) = self
+                .chooser
+                .free_with_completion_tokens(&self.context_id, self.completion_tokens)
+                .await
         {
             tracing::warn!(
                 request_id = %self.context_id,
                 %error,
                 "Failed to free request"
             );
+        }
+        if let Some(session_id) = self.final_session_id.take() {
+            self.chooser.end_session(&session_id).await;
         }
         self.freed = true;
     }
@@ -56,7 +71,8 @@ impl RequestCleanup {
 impl Drop for RequestCleanup {
     fn drop(&mut self) {
         let needs_free = !self.freed && self.scheduler_tracked;
-        if !needs_free {
+        let final_session_id = self.final_session_id.take();
+        if !needs_free && final_session_id.is_none() {
             return;
         }
 
@@ -70,13 +86,20 @@ impl Drop for RequestCleanup {
 
         let chooser = self.chooser.clone();
         let context_id = self.context_id.clone();
+        let completion_tokens = self.completion_tokens;
         handle.spawn(async move {
-            if let Err(error) = chooser.free(&context_id).await {
+            if let Err(error) = chooser
+                .free_with_completion_tokens(&context_id, completion_tokens)
+                .await
+            {
                 tracing::warn!(
                     request_id = %context_id,
                     %error,
                     "Failed to free request from drop guard"
                 );
+            }
+            if let Some(session_id) = final_session_id {
+                chooser.end_session(&session_id).await;
             }
         });
     }
@@ -260,6 +283,7 @@ impl RequestGuard {
         context_id: String,
         request: &PreprocessedRequest,
         scheduler_tracked: bool,
+        final_session_id: Option<String>,
     ) -> Self {
         // Snapshot request-scoped inputs now so the guard can outlive the
         // PreprocessedRequest after it is moved into backend dispatch.
@@ -275,7 +299,7 @@ impl RequestGuard {
             RouterRequestMetrics::from_component(chooser.client().endpoint.component());
 
         Self {
-            cleanup: RequestCleanup::new(chooser, context_id, scheduler_tracked),
+            cleanup: RequestCleanup::new(chooser, context_id, scheduler_tracked, final_session_id),
             observability: RequestObservability::new(request.tracker.clone(), request_metrics),
             output_blocks: OutputBlockTracker::new(
                 track_output_blocks,
@@ -330,6 +354,7 @@ impl RequestGuard {
         }
 
         let new_tokens = item.data.as_ref().map_or(0, |data| data.token_ids.len());
+        self.cleanup.completion_tokens = self.cleanup.completion_tokens.saturating_add(new_tokens);
         self.observability.observe_tokens(new_tokens);
         let Some(update) = self
             .output_blocks

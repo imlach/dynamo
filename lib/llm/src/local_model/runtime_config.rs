@@ -290,6 +290,13 @@ impl dynamo_kv_router::WorkerConfigLike for ModelRuntimeConfig {
         self.total_kv_blocks
     }
 
+    fn extra_kv_capacity_tokens(&self) -> Option<u64> {
+        self.runtime_data
+            .get("sglang_hicache_capacity")?
+            .get("host_total_tokens")?
+            .as_u64()
+    }
+
     fn taints(&self) -> &HashSet<String> {
         &self.taints
     }

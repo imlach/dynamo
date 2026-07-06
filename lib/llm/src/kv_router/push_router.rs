@@ -201,6 +201,7 @@ impl KvPushRouter {
         request: &SingleIn<PreprocessedRequest>,
         selection: &mut WorkerSelection,
         is_query_only: bool,
+        final_session_id: Option<String>,
     ) -> Result<RequestGuard, Error> {
         let context_id = request.context().id().to_string();
         let request_context = request.context().clone();
@@ -211,6 +212,7 @@ impl KvPushRouter {
             context_id.clone(),
             request,
             selection.scheduler_tracked,
+            final_session_id,
         );
 
         let record_result: Result<(), Error> = async {
@@ -422,7 +424,7 @@ impl KvPushRouter {
             .select_with_affinity(&request, phase, is_query_only)
             .await?;
         let mut guard = match self
-            .track_selection(&request, &mut selection, is_query_only)
+            .track_selection(&request, &mut selection, is_query_only, None)
             .await
         {
             Ok(guard) => guard,
@@ -488,6 +490,9 @@ impl AsyncEngine<SingleIn<PreprocessedRequest>, ManyOut<Annotated<LLMEngineOutpu
         &self,
         request: SingleIn<PreprocessedRequest>,
     ) -> Result<ManyOut<Annotated<LLMEngineOutput>>, Error> {
+        let final_session_id = request.agent_context.as_ref().and_then(|context| {
+            (context.session_final == Some(true)).then(|| context.session_id.clone())
+        });
         let is_query_only = request.get_annotation_value("query_instance_id").is_some();
         let phase = request
             .tracker
@@ -544,7 +549,10 @@ impl AsyncEngine<SingleIn<PreprocessedRequest>, ManyOut<Annotated<LLMEngineOutpu
             return Ok(ResponseStream::new(Box::pin(stream), stream_context));
         }
 
-        let guard = match self.track_selection(&request, &mut selection, false).await {
+        let guard = match self
+            .track_selection(&request, &mut selection, false, final_session_id)
+            .await
+        {
             Ok(guard) => guard,
             Err(error) => {
                 invalidate_on_non_cancellation(&mut operation, &error);

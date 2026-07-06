@@ -19,6 +19,7 @@ use super::policy_config::{PolicyClassConfig, PolicyProfile};
 use super::policy_queue::{PolicyQueue, QueueSnapshot};
 use super::prefill_load::{PrefillLoadEstimator, effective_prefill_tokens};
 use super::selector::{DefaultWorkerSelector, WorkerSelector};
+use super::session_aware::SessionAwarePolicy;
 use super::types::{
     KvSchedulerError, OverloadedWorkerProvider, SchedulingContext, SchedulingRequest,
     SchedulingResponse,
@@ -59,6 +60,11 @@ enum AdmissionCommand {
         ack_tx: oneshot::Sender<()>,
     },
     Update {
+        completed_request: Option<(String, usize)>,
+        ack_tx: oneshot::Sender<()>,
+    },
+    EndSession {
+        session_id: String,
         ack_tx: oneshot::Sender<()>,
     },
 }
@@ -83,6 +89,7 @@ struct SchedulerQueueActor<
     overlap_scores_refresh: Option<Arc<RF>>,
     overlap_refresh_after: Option<Duration>,
     overloaded_worker_provider: Option<OverloadedWorkerProvider>,
+    session_aware: Option<SessionAwarePolicy>,
 }
 
 /// Queue that gates scheduling requests behind a capacity check.
@@ -106,6 +113,7 @@ pub struct SchedulerQueue<
     slots: Arc<ActiveSequencesMultiWorker<P>>,
     workers_with_configs: watch::Receiver<HashMap<WorkerId, C>>,
     queueing_enabled: bool,
+    session_aware_enabled: bool,
     supports_overlap_refresh: bool,
     _marker: PhantomData<(Sel, RF)>,
 }
@@ -178,10 +186,12 @@ impl<
         overloaded_worker_provider: Option<OverloadedWorkerProvider>,
         admission_channel_capacity: usize,
     ) -> Self {
-        let queueing_enabled = profile
-            .classes()
-            .iter()
-            .any(PolicyClassConfig::queueing_enabled);
+        let session_aware_enabled = profile.session_aware().is_some();
+        let queueing_enabled = session_aware_enabled
+            || profile
+                .classes()
+                .iter()
+                .any(PolicyClassConfig::queueing_enabled);
         for class in profile.classes() {
             tracing::info!(
                 policy_class = class.name,
@@ -222,6 +232,10 @@ impl<
         );
         let (admission_tx, admission_rx) = mpsc::channel(admission_channel_capacity);
         let actor = SchedulerQueueActor {
+            session_aware: profile
+                .session_aware()
+                .cloned()
+                .map(SessionAwarePolicy::new),
             pending: PolicyQueue::new(profile.clone()),
             profile,
             pending_count: Arc::clone(&pending_count),
@@ -246,6 +260,7 @@ impl<
             slots,
             workers_with_configs,
             queueing_enabled,
+            session_aware_enabled,
             supports_overlap_refresh: overlap_refresh_after.is_some(),
             _marker: PhantomData,
         }
@@ -386,7 +401,50 @@ impl<
         let (ack_tx, ack_rx) = oneshot::channel();
         if self
             .admission_tx
-            .send(AdmissionCommand::Update { ack_tx })
+            .send(AdmissionCommand::Update {
+                completed_request: None,
+                ack_tx,
+            })
+            .await
+            .is_ok()
+        {
+            let _ = ack_rx.await;
+        }
+    }
+
+    pub async fn complete(&self, request_id: &str, completion_tokens: usize) {
+        if !self.session_aware_enabled {
+            self.update().await;
+            return;
+        }
+        if !self.queueing_enabled {
+            return;
+        }
+        let (ack_tx, ack_rx) = oneshot::channel();
+        if self
+            .admission_tx
+            .send(AdmissionCommand::Update {
+                completed_request: Some((request_id.to_string(), completion_tokens)),
+                ack_tx,
+            })
+            .await
+            .is_ok()
+        {
+            let _ = ack_rx.await;
+        }
+    }
+
+    pub async fn end_session(&self, session_id: &str) {
+        if !self.session_aware_enabled {
+            return;
+        }
+        let (ack_tx, ack_rx) = oneshot::channel();
+        if self
+            .admission_tx
+            .send(AdmissionCommand::EndSession {
+                session_id: session_id.to_string(),
+                ack_tx,
+            })
             .await
             .is_ok()
         {
@@ -446,8 +504,17 @@ impl<
                     self.handle_enqueue(request, block_hashes);
                     let _ = ack_tx.send(());
                 }
-                AdmissionCommand::Update { ack_tx } => {
-                    self.handle_update().await;
+                AdmissionCommand::Update {
+                    completed_request,
+                    ack_tx,
+                } => {
+                    self.handle_update(completed_request.as_ref()).await;
+                    let _ = ack_tx.send(());
+                }
+                AdmissionCommand::EndSession { session_id, ack_tx } => {
+                    if let Some(policy) = self.session_aware.as_mut() {
+                        policy.end_session(&session_id);
+                    }
                     let _ = ack_tx.send(());
                 }
             }
@@ -476,11 +543,17 @@ impl<
 
     fn handle_enqueue(
         &mut self,
-        request: SchedulingRequest,
+        mut request: SchedulingRequest,
         block_hashes: Option<Vec<LocalBlockHash>>,
     ) {
-        let eligibility = request.eligibility();
         let decay_now = Instant::now();
+        let force_queue = if let Some(policy) = self.session_aware.as_mut() {
+            let workers = self.workers_with_configs.borrow();
+            policy.prepare(&mut request, &workers, self.block_size, decay_now)
+        } else {
+            false
+        };
+        let eligibility = request.eligibility();
         // Synthetic and explicit selections avoid cache work. Family
         // classification reuses one worker generation for snapshot and busy checks.
         let (class_index, snapshot, should_queue) = if let Some(class_index) = self
@@ -488,9 +561,10 @@ impl<
             .direct_class_index(request.policy_class.as_deref())
         {
             let class = self.profile.class(class_index);
-            let should_queue = self.should_queue(class_index, class, || {
-                self.all_workers_prefill_busy(class, eligibility, decay_now)
-            });
+            let should_queue = force_queue
+                || self.should_queue(class_index, class, || {
+                    self.all_workers_prefill_busy(class, eligibility, decay_now)
+                });
             (class_index, None, should_queue)
         } else {
             let active_tokens = self.slots.active_tokens(decay_now);
@@ -500,9 +574,15 @@ impl<
                 .profile
                 .resolve_class_index(request.policy_class.as_deref(), snapshot.uncached_tokens);
             let class = self.profile.class(class_index);
-            let should_queue = self.should_queue(class_index, class, || {
-                Self::all_workers_prefill_busy_with(&active_tokens, &workers, class, eligibility)
-            });
+            let should_queue = force_queue
+                || self.should_queue(class_index, class, || {
+                    Self::all_workers_prefill_busy_with(
+                        &active_tokens,
+                        &workers,
+                        class,
+                        eligibility,
+                    )
+                });
             (class_index, Some(snapshot), should_queue)
         };
         if !should_queue {
@@ -532,6 +612,9 @@ impl<
             queued,
         ) {
             let mut request = queued.request;
+            if let Some(policy) = self.session_aware.as_mut() {
+                policy.on_admission_failed(&request);
+            }
             request.respond(Err(KvSchedulerError::QueueRejected(rejection)));
             return;
         }
@@ -567,7 +650,15 @@ impl<
         QueueSnapshot::new(request.isl_tokens, context.best_cached_tokens())
     }
 
-    async fn handle_update(&mut self) {
+    async fn handle_update(&mut self, completed_request: Option<&(String, usize)>) {
+        let now = Instant::now();
+        if let Some(policy) = self.session_aware.as_mut() {
+            if let Some((request_id, completion_tokens)) = completed_request {
+                policy.complete(request_id, *completion_tokens, now);
+            }
+            let workers = self.workers_with_configs.borrow();
+            policy.tick(&workers, self.block_size, now);
+        }
         if self.pending.pending_count() == 0 {
             return;
         }
@@ -579,16 +670,18 @@ impl<
             let active_tokens = self.slots.active_tokens(decay_now);
             let popped = {
                 let configs = self.workers_with_configs.borrow();
+                let session_aware = self.session_aware.as_ref();
                 self.pending.pop_next(|_, class, queued| {
                     // TODO: This preserves head-of-line blocking within each policy
                     // class. A blocked constrained head can stall later entries in
                     // that class until a bounded non-HOL strategy is introduced.
-                    !Self::all_workers_prefill_busy_with(
-                        &active_tokens,
-                        &configs,
-                        class,
-                        queued.request.eligibility(),
-                    )
+                    session_aware.is_none_or(|policy| policy.can_dispatch(&queued.request))
+                        && !Self::all_workers_prefill_busy_with(
+                            &active_tokens,
+                            &configs,
+                            class,
+                            queued.request.eligibility(),
+                        )
                 })
             };
             let Some(mut popped) = popped else {
@@ -636,7 +729,10 @@ impl<
             let admit_now = Instant::now();
             let class_index = popped.class_index();
             let class = self.profile.class(class_index);
-            let request = popped.into_payload().request;
+            let mut request = popped.into_payload().request;
+            if let Some(policy) = self.session_aware.as_ref() {
+                policy.apply_assignment(&mut request);
+            }
             tracing::debug!(
                 policy_class = class.name,
                 "scheduling request from pending queue"
@@ -647,7 +743,7 @@ impl<
 
     /// Run the full scheduling pipeline for a single request:
     /// compute projected load -> select worker -> book tracked state -> respond.
-    fn admit_one(&self, mut request: SchedulingRequest, decay_now: Instant) {
+    fn admit_one(&mut self, mut request: SchedulingRequest, decay_now: Instant) {
         request.worker_loads = self
             .slots
             .project_worker_loads(request.token_seq.as_deref(), decay_now);
@@ -676,6 +772,9 @@ impl<
             Ok(s) => s,
             Err(e) => {
                 tracing::warn!("scheduling failed: {e}");
+                if let Some(policy) = self.session_aware.as_mut() {
+                    policy.on_admission_failed(&request);
+                }
                 request.respond(Err(e));
                 return;
             }
@@ -725,7 +824,7 @@ impl<
     /// request lifetime and the caller must install its RAII cleanup owner. If
     /// delivery loses that race, roll back the booking here.
     fn book_and_respond(
-        &self,
+        &mut self,
         mut request: SchedulingRequest,
         sequence_request: SequenceRequest,
         response: SchedulingResponse,
@@ -735,23 +834,36 @@ impl<
                 request_id = %sequence_request.request_id,
                 "Skipping scheduler booking for cancelled request"
             );
+            if let Some(policy) = self.session_aware.as_mut() {
+                policy.on_admission_failed(&request);
+            }
             return;
         }
 
         let request_id = sequence_request.request_id.clone();
+        let worker = sequence_request.worker;
         if let Err(error) = self.slots.add_request(sequence_request, Instant::now()) {
             tracing::warn!(%request_id, %error, "Failed to book scheduler state");
+            if let Some(policy) = self.session_aware.as_mut() {
+                policy.on_admission_failed(&request);
+            }
             request.respond(Err(KvSchedulerError::BookingFailed(error.to_string())));
             return;
         }
 
         if request.respond(Ok(response)) {
+            if let Some(policy) = self.session_aware.as_mut() {
+                policy.on_admitted(&request, worker);
+            }
             return;
         }
 
         tracing::debug!(%request_id, "Rolling back undelivered scheduler booking");
         if let Err(error) = self.slots.free(&request_id, Instant::now()) {
             tracing::error!(%request_id, %error, "Failed to roll back scheduler booking");
+        }
+        if let Some(policy) = self.session_aware.as_mut() {
+            policy.on_admission_failed(&request);
         }
     }
 
@@ -1731,6 +1843,60 @@ mod tests {
         queue.update().await;
 
         assert_eq!(queue.pending_count(), 0, "all requests should be drained");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn session_aware_policy_pauses_and_resumes_through_existing_queue() {
+        let profile = policy_profile(
+            r#"
+session_aware:
+  pause_threshold: 0.8
+  pause_target: 0.7
+  resume_hysteresis: 0.0
+  scheduler_interval_seconds: 0.001
+"#,
+        );
+        let (queue, slots, configs) = make_queue_with_profile_and_sender(1, 10, 10_000, profile);
+        configs.send_modify(|configs| {
+            configs.get_mut(&0).unwrap().total_kv_blocks = Some(100);
+        });
+
+        let (mut big, big_rx) = make_request("big-r1", 600);
+        big.session_id = Some("big".to_string());
+        queue.enqueue(big).await;
+        assert_eq!(
+            big_rx.await.unwrap().unwrap().best_worker,
+            WorkerWithDpRank::new(0, 0)
+        );
+        slots.free(&"big-r1".to_string(), decay_now()).unwrap();
+        queue.complete("big-r1", 0).await;
+
+        let (mut small, small_rx) = make_request("small-r1", 200);
+        small.session_id = Some("small".to_string());
+        queue.enqueue(small).await;
+        small_rx.await.unwrap().unwrap();
+        slots.free(&"small-r1".to_string(), decay_now()).unwrap();
+        tokio::time::sleep(Duration::from_millis(2)).await;
+        queue.complete("small-r1", 0).await;
+
+        let (mut continuation, continuation_rx) = make_request("small-r2", 220);
+        continuation.session_id = Some("small".to_string());
+        queue.enqueue(continuation).await;
+        assert_eq!(queue.pending_count(), 1);
+
+        queue.end_session("big").await;
+        tokio::time::sleep(Duration::from_millis(2)).await;
+        queue.update().await;
+        assert_eq!(
+            continuation_rx.await.unwrap().unwrap().best_worker,
+            WorkerWithDpRank::new(0, 0)
+        );
+        assert_eq!(queue.pending_count(), 0);
+
+        slots.free(&"small-r2".to_string(), decay_now()).unwrap();
+        queue.complete("small-r2", 0).await;
+        queue.end_session("small").await;
+        slots.assert_completely_drained(decay_now());
     }
 
     #[tokio::test(flavor = "multi_thread")]

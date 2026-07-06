@@ -793,6 +793,20 @@ where
         self.scheduler.free(request_id).await
     }
 
+    pub async fn free_with_completion_tokens(
+        &self,
+        request_id: &str,
+        completion_tokens: usize,
+    ) -> Result<(), SequenceError> {
+        self.scheduler
+            .free_with_completion_tokens(request_id, completion_tokens)
+            .await
+    }
+
+    pub async fn end_session(&self, session_id: &str) {
+        self.scheduler.end_session(session_id).await;
+    }
+
     /// Number of requests currently parked in the scheduler queue.
     pub fn pending_count(&self) -> usize {
         self.scheduler.pending_count()

@@ -773,13 +773,22 @@ impl KvRouterConfig {
         const DEFAULT_RECHECK_INTERVAL: Duration = Duration::from_secs(60);
         const PREFILL_LOAD_RECHECK_INTERVAL: Duration = Duration::from_millis(100);
 
-        if self.router_prefill_load_model.is_enabled()
+        let interval = if self.router_prefill_load_model.is_enabled()
             && (self.router_policy_config.is_some() || self.router_queue_threshold.is_some())
         {
-            return PREFILL_LOAD_RECHECK_INTERVAL;
-        }
+            PREFILL_LOAD_RECHECK_INTERVAL
+        } else {
+            DEFAULT_RECHECK_INTERVAL
+        };
 
-        DEFAULT_RECHECK_INTERVAL
+        self.configured_policy_profile()
+            .ok()
+            .and_then(|profile| {
+                profile
+                    .session_aware()
+                    .map(|config| config.scheduler_interval())
+            })
+            .map_or(interval, |session_aware| interval.min(session_aware))
     }
 
     pub fn predict_on_route_enabled(&self) -> bool {

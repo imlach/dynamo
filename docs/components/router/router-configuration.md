@@ -101,6 +101,41 @@ accepted, and ordinary physical classes are no longer direct header
 overrides. The sample is a Baseten-oriented continuing-session starting point,
 not a compatibility profile.
 
+### Session-Aware Routing
+
+> [!WARNING]
+> **Experimental.** Session-aware routing is an opt-in policy for agentic workloads with sequential requests that share a session ID.
+
+Session-aware routing groups requests by `session_id` and keeps each active session's working set on one worker. It runs as an actor-local admission and placement policy around the existing router queue; FCFS, WSPT, DRR, queue limits, and requests without a session ID keep their existing behavior. This policy is based on the scheduling design introduced by the [ThunderAgent paper](https://arxiv.org/abs/2602.13692) and Dynamo's standalone [ThunderAgent Program Scheduler](../../agents/thunderagent-router.md).
+
+Enable the policy with a router policy config:
+
+```yaml
+session_aware: {}
+```
+
+```bash
+python -m dynamo.frontend \
+    --router-mode kv \
+    --router-policy-config /etc/dynamo/session-aware.yaml
+```
+
+New sessions are assigned to the least-used eligible worker that has room for the estimated working set. Capacity includes device KV blocks and, when reported by SGLang HiCache, host-retained tokens. At the control interval, the policy resumes paused sessions with best-fit decreasing placement before it pauses additional sessions. When pressure exceeds the configured threshold, it pauses the smallest sessions that are between requests first and marks in-flight sessions for pause when their current request completes. A resumed continuation receives a queue-priority boost, and a bounded timeout prevents indefinite starvation.
+
+| Field | Default | Description |
+| --- | ---: | --- |
+| `pause_threshold` | `0.95` | Begin working-set control above this fraction of worker capacity. |
+| `pause_target` | `0.80` | Pause sessions until estimated use reaches this fraction. |
+| `resume_hysteresis` | `0.10` | Reserve this fraction below the pause threshold when resuming sessions. |
+| `resume_timeout_seconds` | `1800` | Force placement after a paused continuation waits this long. |
+| `resume_priority_boost` | `1.0` | Add this value to a resumed continuation's queue priority. |
+| `scheduler_interval_seconds` | `5.0` | Run the working-set control loop at this interval. |
+| `acting_token_weight` | `1.0` | Weight retained tokens for sessions between requests. |
+| `acting_decay_tau_seconds` | `1.0` | Decay time constant used only for forced-resume placement. |
+| `buffer_per_program` | `100` | Reserve this many extra tokens per active session. |
+
+Leave `--router-session-affinity-ttl-secs` unset when using session-aware routing because the policy owns session placement and may migrate a paused session. Send `X-Dynamo-Session-ID` on every request and `X-Dynamo-Session-Final: true` on the last generated turn so the router releases the session state after the response completes.
+
 For `--router-mode device-aware-weighted`, set `DYN_ENCODER_CUDA_TO_CPU_RATIO` to the approximate throughput ratio of one non-CPU worker relative to one CPU worker. The default is `8`.
 
 ## Session Affinity

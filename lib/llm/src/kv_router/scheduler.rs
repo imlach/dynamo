@@ -333,9 +333,23 @@ where
     }
 
     pub async fn free(&self, request_id: &str) -> Result<(), SequenceError> {
-        self.inner.free(request_id).await?;
+        self.free_with_completion_tokens(request_id, 0).await
+    }
+
+    pub async fn free_with_completion_tokens(
+        &self,
+        request_id: &str,
+        completion_tokens: usize,
+    ) -> Result<(), SequenceError> {
+        self.inner
+            .free_with_completion_tokens(request_id, completion_tokens)
+            .await?;
         self.update_queue_metrics();
         Ok(())
+    }
+
+    pub async fn end_session(&self, session_id: &str) {
+        self.inner.end_session(session_id).await;
     }
 
     pub fn pending_count(&self) -> usize {

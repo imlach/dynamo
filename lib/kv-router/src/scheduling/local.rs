@@ -442,9 +442,21 @@ where
     }
 
     pub async fn free(&self, request_id: &str) -> Result<(), SequenceError> {
+        self.free_with_completion_tokens(request_id, 0).await
+    }
+
+    pub async fn free_with_completion_tokens(
+        &self,
+        request_id: &str,
+        completion_tokens: usize,
+    ) -> Result<(), SequenceError> {
         self.slots.free(&request_id.to_string(), Instant::now())?;
-        self.queue.update().await;
+        self.queue.complete(request_id, completion_tokens).await;
         Ok(())
+    }
+
+    pub async fn end_session(&self, session_id: &str) {
+        self.queue.end_session(session_id).await;
     }
 
     pub fn pending_count(&self) -> usize {

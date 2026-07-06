@@ -180,6 +180,10 @@ pub trait WorkerConfigLike {
     fn max_num_batched_tokens(&self) -> Option<u64>;
     fn total_kv_blocks(&self) -> Option<u64>;
 
+    fn extra_kv_capacity_tokens(&self) -> Option<u64> {
+        None
+    }
+
     fn taints(&self) -> &HashSet<String> {
         &EMPTY_WORKER_TAINTS
     }
