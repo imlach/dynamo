@@ -23,8 +23,9 @@ from gpu_memory_service.client.torch.module import materialize_module_from_gms
 from gpu_memory_service.common.locks import GrantedLockType
 from gpu_memory_service.common.utils import get_socket_path
 from gpu_memory_service.integrations.common.utils import (
-    finalize_gms_write,
+    PreparedGMSWrite,
     get_gms_lock_mode,
+    prepare_gms_write,
     setup_meta_tensor_workaround,
     strip_gms_model_loader_config,
 )
@@ -52,6 +53,9 @@ logger = logging.getLogger(__name__)
 _last_imported_weights_bytes: int = 0
 _last_model_memory_usage_offset_bytes: int = 0
 
+# First-writer GMS write awaiting publication after vLLM memory profiling.
+_pending_gms_write: PreparedGMSWrite | None = None
+
 
 def get_imported_weights_bytes() -> int:
     """Return bytes of weights imported in the last load_model call."""
@@ -61,6 +65,67 @@ def get_imported_weights_bytes() -> int:
 def get_model_memory_usage_offset_bytes() -> int:
     """Return the offset to add to imported bytes for vLLM model_memory_usage."""
     return _last_model_memory_usage_offset_bytes
+
+
+def has_pending_gms_write() -> bool:
+    """Return whether this process still owns an unpublished GMS write."""
+    return _pending_gms_write is not None
+
+
+def _store_pending_gms_write(prepared: PreparedGMSWrite) -> None:
+    global _last_imported_weights_bytes, _last_model_memory_usage_offset_bytes
+    global _pending_gms_write
+
+    if _pending_gms_write is not None:
+        raise RuntimeError("A GMS write is already awaiting publication")
+    _pending_gms_write = prepared
+    _last_imported_weights_bytes = prepared.stats.committed_bytes
+    _last_model_memory_usage_offset_bytes = (
+        prepared.stats.pruned_bytes + prepared.rebound_bytes
+    )
+
+
+def publish_pending_gms_write() -> bool:
+    """Publish and clear the pending vLLM first-writer state, if any.
+
+    On publication failure the writer is released best-effort and the
+    original error propagates; the engine cannot serve without published
+    weights, and process teardown lets GMS clear the aborted layout.
+    """
+    global _pending_gms_write
+
+    prepared = _pending_gms_write
+    if prepared is None:
+        return False
+    _pending_gms_write = None
+
+    try:
+        prepared.publish()
+    except BaseException:
+        try:
+            prepared.abort()
+        except BaseException:
+            logger.exception("[GMS] Failed to release a failed pending write")
+        raise
+
+    logger.info(
+        "[GMS] Published %.2f GiB after vLLM memory profiling and switched "
+        "to read mode",
+        prepared.stats.committed_bytes / (1 << 30),
+    )
+    return True
+
+
+def abort_pending_gms_write() -> bool:
+    """Abort and clear the pending vLLM first-writer state, if any."""
+    global _pending_gms_write
+
+    prepared = _pending_gms_write
+    if prepared is None:
+        return False
+    _pending_gms_write = None
+    prepared.abort()
+    return True
 
 
 # =============================================================================
@@ -203,16 +268,20 @@ def _load_write_mode(
     default_loader,
     target_device: torch.device,
 ) -> torch.nn.Module:
-    """Load model from disk and publish weights to GMS (RW mode).
+    """Load model from disk and prepare weights for GMS publication (RW mode).
 
     Initializes model using GMS memory pool, loads weights from disk,
-    registers tensors with GMS, and commits for cross-process sharing.
+    registers tensors with GMS, and prepares a write that is published only
+    after vLLM memory profiling (see GMSWorker.determine_available_memory).
+    Deferring the commit keeps waiting RO consumers (snapshot saver, peer
+    engines) off the device while vLLM profiles memory.
 
     When MX is active, uses LoadStrategyChain for automatic weight source
     detection (RDMA P2P -> ModelStreamer -> GDS -> disk) with fallback.
     The chain also handles NIXL registration and metadata publishing.
     """
-    global _last_imported_weights_bytes, _last_model_memory_usage_offset_bytes
+    if _pending_gms_write is not None:
+        raise RuntimeError("A GMS write is already awaiting publication")
 
     from vllm.model_executor.model_loader.utils import (
         initialize_model,
@@ -239,12 +308,16 @@ def _load_write_mode(
 
             torch.cuda.empty_cache()
 
-    finalize_result = finalize_gms_write(gms_client, model)
-    _last_imported_weights_bytes = finalize_result.committed_bytes
-    _last_model_memory_usage_offset_bytes = finalize_result.pruned_bytes
+    prepared = prepare_gms_write(gms_client, model)
+    # The private clones must exist before vLLM profiles memory so the
+    # profiled peak covers them. Their registered GMS copies stay alive on
+    # the prepared write until commit, for readers to materialize from.
+    prepared.rebind_nonparameter_tensors()
+    _store_pending_gms_write(prepared)
 
     logger.info(
-        "[GMS] Write mode: published %.2f GiB " "(vLLM memory offset %.2f GiB)",
+        "[GMS] Write mode: prepared %.2f GiB for publication after profiling "
+        "(vLLM memory offset %.2f GiB)",
         _last_imported_weights_bytes / (1 << 30),
         _last_model_memory_usage_offset_bytes / (1 << 30),
     )
