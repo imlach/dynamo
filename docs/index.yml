@@ -430,6 +430,8 @@ navigation:
                 path: components/router/router-concepts.md
               - page: Configuration and Tuning
                 path: components/router/router-configuration.md
+              - page: AgentAware Routing
+                path: components/router/agent-aware-routing.md
               - page: Deficit Round Robin Queue Scheduling
                 path: components/router/deficit-round-robin.md
               - page: Priority Scheduling
