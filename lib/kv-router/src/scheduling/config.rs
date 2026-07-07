@@ -785,10 +785,10 @@ impl KvRouterConfig {
             .ok()
             .and_then(|profile| {
                 profile
-                    .session_aware()
+                    .agent_aware()
                     .map(|config| config.scheduler_interval())
             })
-            .map_or(interval, |session_aware| interval.min(session_aware))
+            .map_or(interval, |agent_aware| interval.min(agent_aware))
     }
 
     pub fn predict_on_route_enabled(&self) -> bool {

@@ -101,23 +101,23 @@ accepted, and ordinary physical classes are no longer direct header
 overrides. The sample is a Baseten-oriented continuing-session starting point,
 not a compatibility profile.
 
-### Session-Aware Routing
+### AgentAware Routing
 
 > [!WARNING]
-> **Experimental.** Session-aware routing is an opt-in policy for agentic workloads with sequential requests that share a session ID.
+> **Experimental.** AgentAware routing is an opt-in policy for agentic workloads with sequential requests that share a session ID.
 
-Session-aware routing groups requests by `session_id` and keeps each active session's working set on one worker. It runs as an actor-local admission and placement policy around the existing router queue; FCFS, WSPT, DRR, queue limits, and requests without a session ID keep their existing behavior. This policy is based on the scheduling design introduced by the [ThunderAgent paper](https://arxiv.org/abs/2602.13692) and Dynamo's standalone [ThunderAgent Program Scheduler](../../agents/thunderagent-router.md).
+AgentAware routing groups requests by `session_id` and keeps each active session's working set on one worker. It runs as an actor-local admission and placement policy around the existing router queue; FCFS, WSPT, DRR, queue limits, and requests without a session ID keep their existing behavior. Its initial algorithm implements the scheduling design introduced by the [ThunderAgent paper](https://arxiv.org/abs/2602.13692) and Dynamo's standalone [ThunderAgent Program Scheduler](../../agents/thunderagent-router.md).
 
 Enable the policy with a router policy config:
 
 ```yaml
-session_aware: {}
+agent_aware: {}
 ```
 
 ```bash
 python -m dynamo.frontend \
     --router-mode kv \
-    --router-policy-config /etc/dynamo/session-aware.yaml
+    --router-policy-config /etc/dynamo/agent-aware.yaml
 ```
 
 New sessions are assigned to the least-used eligible worker that has room for the estimated working set. Capacity includes device KV blocks and, when reported by SGLang HiCache, host-retained tokens. At the control interval, the policy resumes paused sessions with best-fit decreasing placement before it pauses additional sessions. When pressure exceeds the configured threshold, it pauses the smallest sessions that are between requests first and marks in-flight sessions for pause when their current request completes. A resumed continuation receives a queue-priority boost, and a bounded timeout prevents indefinite starvation.
@@ -134,7 +134,7 @@ New sessions are assigned to the least-used eligible worker that has room for th
 | `acting_decay_tau_seconds` | `1.0` | Decay time constant used only for forced-resume placement. |
 | `buffer_per_program` | `100` | Reserve this many extra tokens per active session. |
 
-Leave `--router-session-affinity-ttl-secs` unset when using session-aware routing because the policy owns session placement and may migrate a paused session. Send `X-Dynamo-Session-ID` on every request and `X-Dynamo-Session-Final: true` on the last generated turn so the router releases the session state after the response completes.
+Leave `--router-session-affinity-ttl-secs` unset when using AgentAware routing because the policy owns session placement and may migrate a paused session. Send `X-Dynamo-Session-ID` on every request and `X-Dynamo-Session-Final: true` on the last generated turn so the router releases the session state after the response completes.
 
 For `--router-mode device-aware-weighted`, set `DYN_ENCODER_CUDA_TO_CPU_RATIO` to the approximate throughput ratio of one non-CPU worker relative to one CPU worker. The default is `8`.
 

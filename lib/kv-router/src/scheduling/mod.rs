@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+mod agent_aware;
 pub mod config;
 mod filter;
 mod local;
@@ -12,9 +13,9 @@ pub mod policy_queue;
 pub mod prefill_load;
 pub mod queue;
 pub mod selector;
-mod session_aware;
 
 mod types;
+pub use agent_aware::AgentAwareConfig;
 pub use filter::*;
 pub use local::LocalScheduler;
 pub use overlap::{
@@ -34,5 +35,4 @@ pub use prefill_load::{
     InvalidEffectivePrefillTokens, PrefillLoadEstimator, effective_prefill_tokens,
     prefill_load_hint_from_effective_tokens,
 };
-pub use session_aware::SessionAwareConfig;
 pub use types::*;

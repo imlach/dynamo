@@ -48,7 +48,7 @@ const fn default_buffer_per_program() -> usize {
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct SessionAwareConfig {
+pub struct AgentAwareConfig {
     pub pause_threshold: f64,
     pub pause_target: f64,
     pub resume_hysteresis: f64,
@@ -60,7 +60,7 @@ pub struct SessionAwareConfig {
     pub buffer_per_program: usize,
 }
 
-impl Default for SessionAwareConfig {
+impl Default for AgentAwareConfig {
     fn default() -> Self {
         Self {
             pause_threshold: default_pause_threshold(),
@@ -76,7 +76,7 @@ impl Default for SessionAwareConfig {
     }
 }
 
-impl SessionAwareConfig {
+impl AgentAwareConfig {
     pub(super) fn validate(&self, location: &str) -> Result<(), RouterPolicyConfigError> {
         let valid_fraction = |value: f64| value.is_finite() && (0.0..=1.0).contains(&value);
         if !valid_fraction(self.pause_threshold) {
@@ -126,7 +126,7 @@ impl SessionAwareConfig {
 }
 
 fn invalid(location: &str, message: &str) -> RouterPolicyConfigError {
-    RouterPolicyConfigError::Validation(format!("{location} session_aware {message}"))
+    RouterPolicyConfigError::Validation(format!("{location} agent_aware {message}"))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -162,15 +162,15 @@ impl Program {
     }
 }
 
-pub(super) struct SessionAwarePolicy {
-    config: SessionAwareConfig,
+pub(super) struct AgentAwarePolicy {
+    config: AgentAwareConfig,
     programs: HashMap<String, Program>,
     requests: HashMap<String, String>,
     last_tick: Instant,
 }
 
-impl SessionAwarePolicy {
-    pub(super) fn new(config: SessionAwareConfig) -> Self {
+impl AgentAwarePolicy {
+    pub(super) fn new(config: AgentAwareConfig) -> Self {
         Self {
             config,
             programs: HashMap::new(),
@@ -425,10 +425,7 @@ impl SessionAwarePolicy {
                     used.entry(worker)
                         .and_modify(|value| *value = value.saturating_add(charge));
                 }
-                tracing::warn!(
-                    session_id,
-                    "session-aware forced session resume after timeout"
-                );
+                tracing::warn!(session_id, "AgentAware forced session resume after timeout");
             }
         }
     }
@@ -506,11 +503,7 @@ impl SessionAwarePolicy {
                 .values()
                 .filter(|program| program.paused)
                 .count();
-            tracing::info!(
-                resumed,
-                still_paused,
-                "session-aware policy resumed sessions"
-            );
+            tracing::info!(resumed, still_paused, "AgentAware policy resumed sessions");
         }
     }
 
@@ -572,7 +565,7 @@ impl SessionAwarePolicy {
                     marked,
                     utilization_before = base_used as f64 / capacity as f64,
                     utilization_after = used as f64 / capacity as f64,
-                    "session-aware policy applied working-set pressure"
+                    "AgentAware policy applied working-set pressure"
                 );
             }
         }
@@ -676,7 +669,7 @@ mod tests {
         }
     }
 
-    fn admit(policy: &mut SessionAwarePolicy, request: &mut SchedulingRequest, now: Instant) {
+    fn admit(policy: &mut AgentAwarePolicy, request: &mut SchedulingRequest, now: Instant) {
         assert!(!policy.prepare(request, &workers(), 10, now));
         let worker = request.pinned_worker.unwrap();
         policy.on_admitted(request, worker);
@@ -685,7 +678,7 @@ mod tests {
     #[test]
     fn assigns_new_session_and_tracks_completion() {
         let now = Instant::now();
-        let mut policy = SessionAwarePolicy::new(SessionAwareConfig::default());
+        let mut policy = AgentAwarePolicy::new(AgentAwareConfig::default());
         let mut request = request("r1", Some("s1"), 600);
 
         admit(&mut policy, &mut request, now);
@@ -700,14 +693,14 @@ mod tests {
     #[test]
     fn pauses_smallest_acting_session_then_resumes_its_continuation() {
         let now = Instant::now();
-        let config = SessionAwareConfig {
+        let config = AgentAwareConfig {
             pause_threshold: 0.8,
             pause_target: 0.7,
             resume_hysteresis: 0.0,
             scheduler_interval_seconds: 1.0,
             ..Default::default()
         };
-        let mut policy = SessionAwarePolicy::new(config);
+        let mut policy = AgentAwarePolicy::new(config);
         for (request_id, session_id, tokens) in [("big-r1", "big", 600), ("small-r1", "small", 200)]
         {
             let mut request = request(request_id, Some(session_id), tokens);
@@ -740,7 +733,7 @@ mod tests {
 
     #[test]
     fn requests_without_session_identity_bypass_policy() {
-        let mut policy = SessionAwarePolicy::new(SessionAwareConfig::default());
+        let mut policy = AgentAwarePolicy::new(AgentAwareConfig::default());
         let mut request = request("r1", None, 900);
         assert!(!policy.prepare(&mut request, &workers(), 10, Instant::now()));
         assert!(policy.programs.is_empty());

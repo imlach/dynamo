@@ -10,6 +10,7 @@ use std::time::Duration;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::Instant;
 
+use super::agent_aware::AgentAwarePolicy;
 use super::config::RouterQueuePolicy;
 use super::filter::RoutingEligibility;
 use super::overlap_refresh::{
@@ -19,7 +20,6 @@ use super::policy_config::{PolicyClassConfig, PolicyProfile};
 use super::policy_queue::{PolicyQueue, QueueSnapshot};
 use super::prefill_load::{PrefillLoadEstimator, effective_prefill_tokens};
 use super::selector::{DefaultWorkerSelector, WorkerSelector};
-use super::session_aware::SessionAwarePolicy;
 use super::types::{
     KvSchedulerError, OverloadedWorkerProvider, SchedulingContext, SchedulingRequest,
     SchedulingResponse,
@@ -89,7 +89,7 @@ struct SchedulerQueueActor<
     overlap_scores_refresh: Option<Arc<RF>>,
     overlap_refresh_after: Option<Duration>,
     overloaded_worker_provider: Option<OverloadedWorkerProvider>,
-    session_aware: Option<SessionAwarePolicy>,
+    agent_aware: Option<AgentAwarePolicy>,
 }
 
 /// Queue that gates scheduling requests behind a capacity check.
@@ -113,7 +113,7 @@ pub struct SchedulerQueue<
     slots: Arc<ActiveSequencesMultiWorker<P>>,
     workers_with_configs: watch::Receiver<HashMap<WorkerId, C>>,
     queueing_enabled: bool,
-    session_aware_enabled: bool,
+    agent_aware_enabled: bool,
     supports_overlap_refresh: bool,
     _marker: PhantomData<(Sel, RF)>,
 }
@@ -186,8 +186,8 @@ impl<
         overloaded_worker_provider: Option<OverloadedWorkerProvider>,
         admission_channel_capacity: usize,
     ) -> Self {
-        let session_aware_enabled = profile.session_aware().is_some();
-        let queueing_enabled = session_aware_enabled
+        let agent_aware_enabled = profile.agent_aware().is_some();
+        let queueing_enabled = agent_aware_enabled
             || profile
                 .classes()
                 .iter()
@@ -232,10 +232,7 @@ impl<
         );
         let (admission_tx, admission_rx) = mpsc::channel(admission_channel_capacity);
         let actor = SchedulerQueueActor {
-            session_aware: profile
-                .session_aware()
-                .cloned()
-                .map(SessionAwarePolicy::new),
+            agent_aware: profile.agent_aware().cloned().map(AgentAwarePolicy::new),
             pending: PolicyQueue::new(profile.clone()),
             profile,
             pending_count: Arc::clone(&pending_count),
@@ -260,7 +257,7 @@ impl<
             slots,
             workers_with_configs,
             queueing_enabled,
-            session_aware_enabled,
+            agent_aware_enabled,
             supports_overlap_refresh: overlap_refresh_after.is_some(),
             _marker: PhantomData,
         }
@@ -413,7 +410,7 @@ impl<
     }
 
     pub async fn complete(&self, request_id: &str, completion_tokens: usize) {
-        if !self.session_aware_enabled {
+        if !self.agent_aware_enabled {
             self.update().await;
             return;
         }
@@ -435,7 +432,7 @@ impl<
     }
 
     pub async fn end_session(&self, session_id: &str) {
-        if !self.session_aware_enabled {
+        if !self.agent_aware_enabled {
             return;
         }
         let (ack_tx, ack_rx) = oneshot::channel();
@@ -512,7 +509,7 @@ impl<
                     let _ = ack_tx.send(());
                 }
                 AdmissionCommand::EndSession { session_id, ack_tx } => {
-                    if let Some(policy) = self.session_aware.as_mut() {
+                    if let Some(policy) = self.agent_aware.as_mut() {
                         policy.end_session(&session_id);
                     }
                     let _ = ack_tx.send(());
@@ -547,7 +544,7 @@ impl<
         block_hashes: Option<Vec<LocalBlockHash>>,
     ) {
         let decay_now = Instant::now();
-        let force_queue = if let Some(policy) = self.session_aware.as_mut() {
+        let force_queue = if let Some(policy) = self.agent_aware.as_mut() {
             let workers = self.workers_with_configs.borrow();
             policy.prepare(&mut request, &workers, self.block_size, decay_now)
         } else {
@@ -612,7 +609,7 @@ impl<
             queued,
         ) {
             let mut request = queued.request;
-            if let Some(policy) = self.session_aware.as_mut() {
+            if let Some(policy) = self.agent_aware.as_mut() {
                 policy.on_admission_failed(&request);
             }
             request.respond(Err(KvSchedulerError::QueueRejected(rejection)));
@@ -652,7 +649,7 @@ impl<
 
     async fn handle_update(&mut self, completed_request: Option<&(String, usize)>) {
         let now = Instant::now();
-        if let Some(policy) = self.session_aware.as_mut() {
+        if let Some(policy) = self.agent_aware.as_mut() {
             if let Some((request_id, completion_tokens)) = completed_request {
                 policy.complete(request_id, *completion_tokens, now);
             }
@@ -670,10 +667,10 @@ impl<
             let active_tokens = self.slots.active_tokens(decay_now);
             let popped = {
                 let configs = self.workers_with_configs.borrow();
-                let session_aware = self.session_aware.as_ref();
+                let agent_aware = self.agent_aware.as_ref();
                 let mut is_dispatchable =
                     |_: usize, class: &PolicyClassConfig, queued: &QueuedRequest| {
-                        session_aware.is_none_or(|policy| policy.can_dispatch(&queued.request))
+                        agent_aware.is_none_or(|policy| policy.can_dispatch(&queued.request))
                             && !Self::all_workers_prefill_busy_with(
                                 &active_tokens,
                                 &configs,
@@ -681,7 +678,7 @@ impl<
                                 queued.request.eligibility(),
                             )
                     };
-                if session_aware.is_some() {
+                if agent_aware.is_some() {
                     self.pending.pop_next_skipping_blocked(&mut is_dispatchable)
                 } else {
                     self.pending.pop_next(&mut is_dispatchable)
@@ -733,7 +730,7 @@ impl<
             let class_index = popped.class_index();
             let class = self.profile.class(class_index);
             let mut request = popped.into_payload().request;
-            if let Some(policy) = self.session_aware.as_ref() {
+            if let Some(policy) = self.agent_aware.as_ref() {
                 policy.apply_assignment(&mut request);
             }
             tracing::debug!(
@@ -775,7 +772,7 @@ impl<
             Ok(s) => s,
             Err(e) => {
                 tracing::warn!("scheduling failed: {e}");
-                if let Some(policy) = self.session_aware.as_mut() {
+                if let Some(policy) = self.agent_aware.as_mut() {
                     policy.on_admission_failed(&request);
                 }
                 request.respond(Err(e));
@@ -837,7 +834,7 @@ impl<
                 request_id = %sequence_request.request_id,
                 "Skipping scheduler booking for cancelled request"
             );
-            if let Some(policy) = self.session_aware.as_mut() {
+            if let Some(policy) = self.agent_aware.as_mut() {
                 policy.on_admission_failed(&request);
             }
             return;
@@ -847,7 +844,7 @@ impl<
         let worker = sequence_request.worker;
         if let Err(error) = self.slots.add_request(sequence_request, Instant::now()) {
             tracing::warn!(%request_id, %error, "Failed to book scheduler state");
-            if let Some(policy) = self.session_aware.as_mut() {
+            if let Some(policy) = self.agent_aware.as_mut() {
                 policy.on_admission_failed(&request);
             }
             request.respond(Err(KvSchedulerError::BookingFailed(error.to_string())));
@@ -855,7 +852,7 @@ impl<
         }
 
         if request.respond(Ok(response)) {
-            if let Some(policy) = self.session_aware.as_mut() {
+            if let Some(policy) = self.agent_aware.as_mut() {
                 policy.on_admitted(&request, worker);
             }
             return;
@@ -865,7 +862,7 @@ impl<
         if let Err(error) = self.slots.free(&request_id, Instant::now()) {
             tracing::error!(%request_id, %error, "Failed to roll back scheduler booking");
         }
-        if let Some(policy) = self.session_aware.as_mut() {
+        if let Some(policy) = self.agent_aware.as_mut() {
             policy.on_admission_failed(&request);
         }
     }
@@ -1849,10 +1846,10 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn session_aware_policy_pauses_and_resumes_through_existing_queue() {
+    async fn agent_aware_policy_pauses_and_resumes_through_existing_queue() {
         let profile = policy_profile(
             r#"
-session_aware:
+agent_aware:
   pause_threshold: 0.8
   pause_target: 0.7
   resume_hysteresis: 0.0
