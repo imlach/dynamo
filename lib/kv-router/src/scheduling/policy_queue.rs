@@ -340,6 +340,123 @@ impl<T> PolicyQueue<T> {
         None
     }
 
+    /// Selects the highest-priority dispatchable entry within each class
+    /// instead of blocking on that class's heap head. Normal queueing uses
+    /// [`Self::pop_next`]; this path is reserved for opt-in policies with
+    /// request-local eligibility such as paused sessions.
+    pub fn pop_next_skipping_blocked(
+        &mut self,
+        mut is_dispatchable: impl FnMut(usize, &PolicyClassConfig, &T) -> bool,
+    ) -> Option<PolicyQueueEntry<T>> {
+        if self.pending_count == 0 {
+            return None;
+        }
+
+        let class_count = self.classes.len();
+        self.dispatchable.fill(false);
+        let mut costs = vec![None; class_count];
+        for offset in 0..class_count {
+            let class_index = (self.next_class + offset) % class_count;
+            let class = &self.classes[class_index];
+            let Some(cost) = class
+                .pending
+                .iter()
+                .filter(|entry| is_dispatchable(class_index, &class.config, entry.payload()))
+                .max()
+                .map(|entry| entry.snapshot.scheduling_cost_tokens)
+            else {
+                if class.pending.is_empty() {
+                    self.classes[class_index].deficit = 0;
+                }
+                continue;
+            };
+            costs[class_index] = Some(cost);
+            self.dispatchable[class_index] = true;
+            let class = &mut self.classes[class_index];
+            if cost <= class.deficit {
+                return Some(self.pop_class_skipping_blocked(class_index, &mut is_dispatchable));
+            }
+            class.deficit = class.deficit.saturating_add(class.config.quantum);
+            if cost <= class.deficit {
+                return Some(self.pop_class_skipping_blocked(class_index, &mut is_dispatchable));
+            }
+        }
+
+        let rounds = self
+            .dispatchable
+            .iter()
+            .enumerate()
+            .filter_map(|(class_index, dispatchable)| {
+                if !dispatchable {
+                    return None;
+                }
+                let class = &self.classes[class_index];
+                let missing = costs[class_index]?.saturating_sub(class.deficit);
+                Some(missing.div_ceil(class.config.quantum))
+            })
+            .min()?;
+
+        for (class_index, dispatchable) in self.dispatchable.iter().copied().enumerate() {
+            if !dispatchable {
+                continue;
+            }
+            let class = &mut self.classes[class_index];
+            class.deficit = class
+                .deficit
+                .saturating_add(class.config.quantum.saturating_mul(rounds));
+        }
+
+        for offset in 0..class_count {
+            let class_index = (self.next_class + offset) % class_count;
+            if costs[class_index].is_some_and(|cost| cost <= self.classes[class_index].deficit) {
+                return Some(self.pop_class_skipping_blocked(class_index, &mut is_dispatchable));
+            }
+        }
+        None
+    }
+
+    fn pop_class_skipping_blocked(
+        &mut self,
+        class_index: usize,
+        is_dispatchable: &mut impl FnMut(usize, &PolicyClassConfig, &T) -> bool,
+    ) -> PolicyQueueEntry<T> {
+        let class = &mut self.classes[class_index];
+        let mut blocked = Vec::new();
+        let entry = loop {
+            let entry = class
+                .pending
+                .pop()
+                .expect("dispatchable policy class entry vanished");
+            if is_dispatchable(class_index, &class.config, entry.payload()) {
+                break entry;
+            }
+            blocked.push(entry);
+        };
+        class.pending.extend(blocked);
+        let class = &mut self.classes[class_index];
+        class.deficit = class
+            .deficit
+            .saturating_sub(entry.snapshot.scheduling_cost_tokens);
+        subtract_stats(&mut class.stats, entry.snapshot);
+        self.pending_count -= 1;
+        // Empty classes discard stale credit. A class that can already afford
+        // its next head keeps the cursor and spends its weighted burst;
+        // otherwise the next call starts at the following class.
+        if class.pending.is_empty() {
+            class.deficit = 0;
+            self.next_class = (class_index + 1) % self.classes.len();
+        } else if class
+            .pending
+            .peek()
+            .is_some_and(|next| next.snapshot.scheduling_cost_tokens <= class.deficit)
+        {
+            self.next_class = class_index;
+        } else {
+            self.next_class = (class_index + 1) % self.classes.len();
+        }
+        entry
+    }
+
     pub fn drain(self) -> impl Iterator<Item = PolicyQueueEntry<T>> {
         self.classes
             .into_iter()
@@ -496,6 +613,48 @@ policy_classes:
         assert_eq!(
             queue.pop_next(|_, _, _| true).unwrap().into_payload(),
             "keep"
+        );
+    }
+
+    #[test]
+    fn skipping_blocked_pops_dispatchable_entry_behind_class_head() {
+        let mut queue = PolicyQueue::new(profile(
+            r#"
+default_policy_family: default
+uncached_isl_buckets:
+  - min_tokens: 0
+    bucket: all
+policy_classes:
+  - name: default
+    policy_family: default
+    cache_bucket: all
+    quantum: 10
+"#,
+        ));
+        queue
+            .enqueue(0, 1, QueueSnapshot::new(1, 0), 0.0, 0.0, 0, "blocked")
+            .unwrap();
+        queue
+            .enqueue(0, 1, QueueSnapshot::new(1, 0), 1.0, 0.0, 0, "dispatchable")
+            .unwrap();
+
+        assert!(
+            queue
+                .pop_next(|_, _, payload| *payload != "blocked")
+                .is_none()
+        );
+        assert_eq!(
+            queue
+                .pop_next_skipping_blocked(|_, _, payload| *payload != "blocked")
+                .unwrap()
+                .into_payload(),
+            "dispatchable"
+        );
+        assert_eq!(queue.pending_count(), 1);
+        assert_eq!(queue.class_stats(0).requests, 1);
+        assert_eq!(
+            queue.pop_next(|_, _, _| true).unwrap().into_payload(),
+            "blocked"
         );
     }
 

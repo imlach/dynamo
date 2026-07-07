@@ -671,18 +671,21 @@ impl<
             let popped = {
                 let configs = self.workers_with_configs.borrow();
                 let session_aware = self.session_aware.as_ref();
-                self.pending.pop_next(|_, class, queued| {
-                    // TODO: This preserves head-of-line blocking within each policy
-                    // class. A blocked constrained head can stall later entries in
-                    // that class until a bounded non-HOL strategy is introduced.
-                    session_aware.is_none_or(|policy| policy.can_dispatch(&queued.request))
-                        && !Self::all_workers_prefill_busy_with(
-                            &active_tokens,
-                            &configs,
-                            class,
-                            queued.request.eligibility(),
-                        )
-                })
+                let mut is_dispatchable =
+                    |_: usize, class: &PolicyClassConfig, queued: &QueuedRequest| {
+                        session_aware.is_none_or(|policy| policy.can_dispatch(&queued.request))
+                            && !Self::all_workers_prefill_busy_with(
+                                &active_tokens,
+                                &configs,
+                                class,
+                                queued.request.eligibility(),
+                            )
+                    };
+                if session_aware.is_some() {
+                    self.pending.pop_next_skipping_blocked(&mut is_dispatchable)
+                } else {
+                    self.pending.pop_next(&mut is_dispatchable)
+                }
             };
             let Some(mut popped) = popped else {
                 break;
