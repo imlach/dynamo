@@ -344,7 +344,10 @@ func TestCheckPodCliqueReady(t *testing.T) {
 			namespace:          "default",
 			wantReady:          false,
 			wantReasonContains: "resource not found",
-			wantServiceStatus:  v1beta1.ComponentReplicaStatus{},
+			wantServiceStatus: v1beta1.ComponentReplicaStatus{
+				ComponentKind:  v1beta1.ComponentKindPodClique,
+				ComponentNames: []string{"missing-podclique"},
+			},
 		},
 		{
 			name:         "PodClique fully ready",
@@ -609,7 +612,10 @@ func TestCheckPCSGReady(t *testing.T) {
 			namespace:          "default",
 			wantReady:          false,
 			wantReasonContains: "resource not found",
-			wantServiceStatus:  v1beta1.ComponentReplicaStatus{},
+			wantServiceStatus: v1beta1.ComponentReplicaStatus{
+				ComponentKind:  v1beta1.ComponentKindPodCliqueScalingGroup,
+				ComponentNames: []string{"missing-pcsg"},
+			},
 		},
 		{
 			name:         "PCSG fully ready",
@@ -1146,7 +1152,35 @@ func Test_GetComponentReadinessAndServiceReplicaStatuses(t *testing.T) {
 			wantReady:              false,
 			wantReason:             "podclique/test-dgd-0-frontend: resource not found",
 			wantServiceStatuses: map[string]v1beta1.ComponentReplicaStatus{
-				"frontend": {},
+				"frontend": {
+					ComponentKind:  v1beta1.ComponentKindPodClique,
+					ComponentNames: []string{"test-dgd-0-frontend"},
+				},
+			},
+		},
+		{
+			name: "service resource not found - PCSG missing",
+			dgdSpec: v1alpha1.DynamoGraphDeploymentSpec{
+				Services: map[string]*v1alpha1.DynamoComponentDeploymentSharedSpec{
+					"worker": {
+						ServiceName:     "worker",
+						DynamoNamespace: ptr.To("default"),
+						ComponentType:   string(commonconsts.ComponentTypeWorker),
+						Replicas:        ptr.To(int32(1)),
+						Multinode: &v1alpha1.MultinodeSpec{
+							NodeCount: 2,
+						},
+					},
+				},
+			},
+			existingGroveResources: []client.Object{},
+			wantReady:              false,
+			wantReason:             "pcsg/test-dgd-0-worker: resource not found",
+			wantServiceStatuses: map[string]v1beta1.ComponentReplicaStatus{
+				"worker": {
+					ComponentKind:  v1beta1.ComponentKindPodCliqueScalingGroup,
+					ComponentNames: []string{"test-dgd-0-worker"},
+				},
 			},
 		},
 	}

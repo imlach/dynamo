@@ -118,15 +118,20 @@ func GetComponentReadinessAndServiceReplicaStatuses(ctx context.Context, client 
 // configuration has been fully applied. This is the PodClique equivalent of IsDeploymentReady
 // for standard Kubernetes Deployments.
 func CheckPodCliqueReady(ctx context.Context, client client.Client, resourceName, namespace string, logger logr.Logger) (bool, string, v1beta1.ComponentReplicaStatus) {
+	serviceStatus := v1beta1.ComponentReplicaStatus{
+		ComponentKind:  v1beta1.ComponentKindPodClique,
+		ComponentNames: []string{resourceName},
+	}
+
 	podClique := &grovev1alpha1.PodClique{}
 	err := client.Get(ctx, types.NamespacedName{Name: resourceName, Namespace: namespace}, podClique)
 	if err != nil {
 		if errors.IsNotFound(err) {
 			logger.V(2).Info("PodClique not found", "resourceName", resourceName)
-			return false, "resource not found", v1beta1.ComponentReplicaStatus{}
+			return false, "resource not found", serviceStatus
 		}
 		logger.V(1).Info("Failed to get PodClique", "error", err, "resourceName", resourceName)
-		return false, fmt.Sprintf("get error: %v", err), v1beta1.ComponentReplicaStatus{}
+		return false, fmt.Sprintf("get error: %v", err), serviceStatus
 	}
 
 	desiredReplicas := podClique.Spec.Replicas
@@ -146,13 +151,9 @@ func CheckPodCliqueReady(ctx context.Context, client client.Client, resourceName
 		"replicas", replicas,
 	)
 
-	serviceStatus := v1beta1.ComponentReplicaStatus{
-		ComponentKind:   v1beta1.ComponentKindPodClique,
-		ComponentNames:  []string{resourceName},
-		Replicas:        podClique.Status.Replicas,
-		UpdatedReplicas: podClique.Status.UpdatedReplicas,
-		ReadyReplicas:   &readyReplicas,
-	}
+	serviceStatus.Replicas = podClique.Status.Replicas
+	serviceStatus.UpdatedReplicas = podClique.Status.UpdatedReplicas
+	serviceStatus.ReadyReplicas = &readyReplicas
 
 	if observedGeneration == nil {
 		logger.V(1).Info("PodClique observedGeneration is nil", "resourceName", resourceName)
@@ -191,15 +192,20 @@ func CheckPodCliqueReady(ctx context.Context, client client.Client, resourceName
 // configuration has been fully applied. This is the PodCliqueScalingGroup equivalent of IsDeploymentReady
 // for standard Kubernetes Deployments.
 func CheckPCSGReady(ctx context.Context, client client.Client, resourceName, namespace string, logger logr.Logger) (bool, string, v1beta1.ComponentReplicaStatus) {
+	serviceStatus := v1beta1.ComponentReplicaStatus{
+		ComponentKind:  v1beta1.ComponentKindPodCliqueScalingGroup,
+		ComponentNames: []string{resourceName},
+	}
+
 	pcsg := &grovev1alpha1.PodCliqueScalingGroup{}
 	err := client.Get(ctx, types.NamespacedName{Name: resourceName, Namespace: namespace}, pcsg)
 	if err != nil {
 		if errors.IsNotFound(err) {
 			logger.V(2).Info("PodCliqueScalingGroup not found", "resourceName", resourceName)
-			return false, "resource not found", v1beta1.ComponentReplicaStatus{}
+			return false, "resource not found", serviceStatus
 		}
 		logger.V(1).Info("Failed to get PodCliqueScalingGroup", "error", err, "resourceName", resourceName)
-		return false, fmt.Sprintf("get error: %v", err), v1beta1.ComponentReplicaStatus{}
+		return false, fmt.Sprintf("get error: %v", err), serviceStatus
 	}
 
 	desiredReplicas := pcsg.Spec.Replicas
@@ -219,13 +225,9 @@ func CheckPCSGReady(ctx context.Context, client client.Client, resourceName, nam
 		"replicas", replicas,
 	)
 
-	serviceStatus := v1beta1.ComponentReplicaStatus{
-		ComponentKind:     v1beta1.ComponentKindPodCliqueScalingGroup,
-		ComponentNames:    []string{resourceName},
-		Replicas:          pcsg.Status.Replicas,
-		UpdatedReplicas:   pcsg.Status.UpdatedReplicas,
-		AvailableReplicas: &availableReplicas,
-	}
+	serviceStatus.Replicas = pcsg.Status.Replicas
+	serviceStatus.UpdatedReplicas = pcsg.Status.UpdatedReplicas
+	serviceStatus.AvailableReplicas = &availableReplicas
 
 	if observedGeneration == nil {
 		logger.V(1).Info("PodCliqueScalingGroup observedGeneration is nil", "resourceName", resourceName)
