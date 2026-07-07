@@ -141,7 +141,7 @@ pub struct PolicyQueue<T> {
     next_class: usize,
     next_enqueue_seq: u64,
     pending_count: usize,
-    dispatchable: Vec<bool>,
+    dispatchable_costs: Vec<Option<usize>>,
 }
 
 impl<T> PolicyQueue<T> {
@@ -162,7 +162,7 @@ impl<T> PolicyQueue<T> {
             next_class: 0,
             next_enqueue_seq: 0,
             pending_count: 0,
-            dispatchable: vec![false; class_count],
+            dispatchable_costs: vec![None; class_count],
         }
     }
 
@@ -264,80 +264,30 @@ impl<T> PolicyQueue<T> {
         }
 
         let class_count = self.classes.len();
-        self.dispatchable.fill(false);
+        self.dispatchable_costs.fill(None);
         for offset in 0..class_count {
             // Rotate the starting point across calls so class vector order
             // cannot become a permanent scheduling preference.
             let class_index = (self.next_class + offset) % class_count;
-            let class = &mut self.classes[class_index];
-            let Some(front) = class.pending.peek() else {
-                class.deficit = 0;
-                continue;
-            };
-            if !is_dispatchable(class_index, &class.config, front.payload()) {
-                // A blocked class retains earned credit but does not accrue
-                // more until its head becomes dispatchable.
-                continue;
-            }
-
-            self.dispatchable[class_index] = true;
-            if front.snapshot.scheduling_cost_tokens <= class.deficit {
-                // Quantum is granted per ring round, not per request. Spend
-                // carried credit before granting this class another quantum.
-                return Some(self.pop_class(class_index));
-            }
-            class.deficit = class.deficit.saturating_add(class.config.quantum);
-            if front.snapshot.scheduling_cost_tokens <= class.deficit {
-                // The normal single-round visit made this head affordable.
-                return Some(self.pop_class(class_index));
-            }
-        }
-
-        // Fast-forward the minimum number of complete virtual rounds needed
-        // for any dispatchable head to progress, avoiding repeated ring scans
-        // for requests much larger than their class quantum. If every head was
-        // blocked, `min()` returns `None` without changing any deficit.
-        let rounds = self
-            .dispatchable
-            .iter()
-            .enumerate()
-            .filter_map(|(class_index, dispatchable)| {
-                if !dispatchable {
-                    return None;
+            let cost = {
+                let class = &mut self.classes[class_index];
+                let Some(front) = class.pending.peek() else {
+                    class.deficit = 0;
+                    continue;
+                };
+                if !is_dispatchable(class_index, &class.config, front.payload()) {
+                    // A blocked class retains earned credit but does not accrue
+                    // more until its head becomes dispatchable.
+                    continue;
                 }
-                let class = &self.classes[class_index];
-                let cost = class.pending.peek()?.snapshot.scheduling_cost_tokens;
-                let missing = cost.saturating_sub(class.deficit);
-                Some(missing.div_ceil(class.config.quantum))
-            })
-            .min()?;
-
-        for (class_index, dispatchable) in self.dispatchable.iter().copied().enumerate() {
-            if !dispatchable {
-                continue;
-            }
-            let class = &mut self.classes[class_index];
-            // Applying the same virtual round count preserves weighting
-            // because each class scales the credit by its own quantum.
-            class.deficit = class
-                .deficit
-                .saturating_add(class.config.quantum.saturating_mul(rounds));
-        }
-
-        for offset in 0..class_count {
-            let class_index = (self.next_class + offset) % class_count;
-            let class = &self.classes[class_index];
-            if self.dispatchable[class_index]
-                && class
-                    .pending
-                    .peek()
-                    .is_some_and(|entry| entry.snapshot.scheduling_cost_tokens <= class.deficit)
-            {
+                front.snapshot.scheduling_cost_tokens
+            };
+            if self.visit_class(class_index, cost) {
                 return Some(self.pop_class(class_index));
             }
         }
-
-        None
+        self.finish_round()
+            .map(|class_index| self.pop_class(class_index))
     }
 
     /// Selects the highest-priority dispatchable entry within each class
@@ -353,51 +303,63 @@ impl<T> PolicyQueue<T> {
         }
 
         let class_count = self.classes.len();
-        self.dispatchable.fill(false);
-        let mut costs = vec![None; class_count];
+        self.dispatchable_costs.fill(None);
         for offset in 0..class_count {
             let class_index = (self.next_class + offset) % class_count;
-            let class = &self.classes[class_index];
-            let Some(cost) = class
-                .pending
-                .iter()
-                .filter(|entry| is_dispatchable(class_index, &class.config, entry.payload()))
-                .max()
-                .map(|entry| entry.snapshot.scheduling_cost_tokens)
-            else {
-                if class.pending.is_empty() {
+            let cost = {
+                let class = &self.classes[class_index];
+                class
+                    .pending
+                    .iter()
+                    .filter(|entry| is_dispatchable(class_index, &class.config, entry.payload()))
+                    .max()
+                    .map(|entry| entry.snapshot.scheduling_cost_tokens)
+            };
+            let Some(cost) = cost else {
+                if self.classes[class_index].pending.is_empty() {
                     self.classes[class_index].deficit = 0;
                 }
                 continue;
             };
-            costs[class_index] = Some(cost);
-            self.dispatchable[class_index] = true;
-            let class = &mut self.classes[class_index];
-            if cost <= class.deficit {
-                return Some(self.pop_class_skipping_blocked(class_index, &mut is_dispatchable));
-            }
-            class.deficit = class.deficit.saturating_add(class.config.quantum);
-            if cost <= class.deficit {
+            if self.visit_class(class_index, cost) {
                 return Some(self.pop_class_skipping_blocked(class_index, &mut is_dispatchable));
             }
         }
+        self.finish_round()
+            .map(|class_index| self.pop_class_skipping_blocked(class_index, &mut is_dispatchable))
+    }
 
+    fn visit_class(&mut self, class_index: usize, cost: usize) -> bool {
+        self.dispatchable_costs[class_index] = Some(cost);
+        let class = &mut self.classes[class_index];
+        if cost <= class.deficit {
+            // Spend carried credit before granting this class another quantum.
+            return true;
+        }
+        class.deficit = class.deficit.saturating_add(class.config.quantum);
+        cost <= class.deficit
+    }
+
+    fn finish_round(&mut self) -> Option<usize> {
+        // Fast-forward the minimum number of complete virtual rounds needed
+        // for any dispatchable request to progress. If all are blocked,
+        // `min()` returns `None` without changing any deficit.
         let rounds = self
-            .dispatchable
+            .dispatchable_costs
             .iter()
             .enumerate()
-            .filter_map(|(class_index, dispatchable)| {
-                if !dispatchable {
-                    return None;
-                }
+            .filter_map(|(class_index, cost)| {
+                let cost = (*cost)?;
                 let class = &self.classes[class_index];
-                let missing = costs[class_index]?.saturating_sub(class.deficit);
-                Some(missing.div_ceil(class.config.quantum))
+                Some(
+                    cost.saturating_sub(class.deficit)
+                        .div_ceil(class.config.quantum),
+                )
             })
             .min()?;
 
-        for (class_index, dispatchable) in self.dispatchable.iter().copied().enumerate() {
-            if !dispatchable {
+        for (class_index, cost) in self.dispatchable_costs.iter().enumerate() {
+            if cost.is_none() {
                 continue;
             }
             let class = &mut self.classes[class_index];
@@ -406,13 +368,13 @@ impl<T> PolicyQueue<T> {
                 .saturating_add(class.config.quantum.saturating_mul(rounds));
         }
 
-        for offset in 0..class_count {
-            let class_index = (self.next_class + offset) % class_count;
-            if costs[class_index].is_some_and(|cost| cost <= self.classes[class_index].deficit) {
-                return Some(self.pop_class_skipping_blocked(class_index, &mut is_dispatchable));
-            }
-        }
-        None
+        let class_count = self.classes.len();
+        (0..class_count)
+            .map(|offset| (self.next_class + offset) % class_count)
+            .find(|&class_index| {
+                self.dispatchable_costs[class_index]
+                    .is_some_and(|cost| cost <= self.classes[class_index].deficit)
+            })
     }
 
     fn pop_class_skipping_blocked(
@@ -433,27 +395,7 @@ impl<T> PolicyQueue<T> {
             blocked.push(entry);
         };
         class.pending.extend(blocked);
-        let class = &mut self.classes[class_index];
-        class.deficit = class
-            .deficit
-            .saturating_sub(entry.snapshot.scheduling_cost_tokens);
-        subtract_stats(&mut class.stats, entry.snapshot);
-        self.pending_count -= 1;
-        // Empty classes discard stale credit. A class that can already afford
-        // its next head keeps the cursor and spends its weighted burst;
-        // otherwise the next call starts at the following class.
-        if class.pending.is_empty() {
-            class.deficit = 0;
-            self.next_class = (class_index + 1) % self.classes.len();
-        } else if class
-            .pending
-            .peek()
-            .is_some_and(|next| next.snapshot.scheduling_cost_tokens <= class.deficit)
-        {
-            self.next_class = class_index;
-        } else {
-            self.next_class = (class_index + 1) % self.classes.len();
-        }
+        self.finish_pop(class_index, entry.snapshot);
         entry
     }
 
@@ -464,19 +406,28 @@ impl<T> PolicyQueue<T> {
     }
 
     fn pop_class(&mut self, class_index: usize) -> PolicyQueueEntry<T> {
+        let entry = self.classes[class_index]
+            .pending
+            .pop()
+            .expect("policy class front vanished");
+        self.finish_pop(class_index, entry.snapshot);
+        entry
+    }
+
+    fn finish_pop(&mut self, class_index: usize, snapshot: QueueSnapshot) {
+        let class_count = self.classes.len();
         let class = &mut self.classes[class_index];
-        let entry = class.pending.pop().expect("policy class front vanished");
         class.deficit = class
             .deficit
-            .saturating_sub(entry.snapshot.scheduling_cost_tokens);
-        subtract_stats(&mut class.stats, entry.snapshot);
+            .saturating_sub(snapshot.scheduling_cost_tokens);
+        subtract_stats(&mut class.stats, snapshot);
         self.pending_count -= 1;
         // Empty classes discard stale credit. A class that can already afford
         // its next head keeps the cursor and spends its weighted burst;
         // otherwise the next call starts at the following class.
         if class.pending.is_empty() {
             class.deficit = 0;
-            self.next_class = (class_index + 1) % self.classes.len();
+            self.next_class = (class_index + 1) % class_count;
         } else if class
             .pending
             .peek()
@@ -484,9 +435,8 @@ impl<T> PolicyQueue<T> {
         {
             self.next_class = class_index;
         } else {
-            self.next_class = (class_index + 1) % self.classes.len();
+            self.next_class = (class_index + 1) % class_count;
         }
-        entry
     }
 }
 

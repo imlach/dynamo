@@ -88,9 +88,10 @@ impl Drop for RequestCleanup {
         let context_id = self.context_id.clone();
         let completion_tokens = self.completion_tokens;
         handle.spawn(async move {
-            if let Err(error) = chooser
-                .free_with_completion_tokens(&context_id, completion_tokens)
-                .await
+            if needs_free
+                && let Err(error) = chooser
+                    .free_with_completion_tokens(&context_id, completion_tokens)
+                    .await
             {
                 tracing::warn!(
                     request_id = %context_id,

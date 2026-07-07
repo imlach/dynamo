@@ -414,9 +414,6 @@ impl<
             self.update().await;
             return;
         }
-        if !self.queueing_enabled {
-            return;
-        }
         let (ack_tx, ack_rx) = oneshot::channel();
         if self
             .admission_tx
