@@ -5,6 +5,21 @@ title: Reference Guide
 subtitle: Features, configuration, and operational details for the TensorRT-LLM backend
 ---
 
+## Argument Reference
+
+The TensorRT-LLM backend accepts Dynamo-specific arguments (model loading, parallelism, batch limits, KV cache, disaggregation, and the experimental diffusion pipeline) plus the cross-cutting Dynamo runtime flags. For the complete field-by-field reference of every flag, default, and environment variable, see:
+
+- [TensorRT-LLM Configuration](trtllm-config-reference.mdx) — the `DYN_TRTLLM_*` backend flags.
+- [Runtime Configuration](../../reference/runtime-config-reference.mdx) — the `DYN_*` flags shared by every backend.
+
+## Default Thinking Mode
+
+To set the thinking mode used when a request omits an explicit control, pass
+`--dyn-default-thinking-mode enabled|disabled` to the TensorRT-LLM worker or
+set `DYN_DEFAULT_THINKING_MODE`. Request-level thinking controls, including
+adaptive thinking, take precedence. See
+[Deployment-Level Thinking Default](../../reasoning/README.md#deployment-level-thinking-default).
+
 ## Building a Custom Container
 
 The Dynamo TensorRT-LLM image layers Dynamo on top of the upstream `nvcr.io/nvidia/tensorrt-llm/release` container — it does not build TensorRT-LLM from source. To rebuild it locally, pin a different upstream TRT-LLM tag, or plug in a TRT-LLM image you built from source, see the [Building a Custom Container](./trtllm-building-custom-container.md) guide.
@@ -33,7 +48,7 @@ When a user cancels a request (e.g., by disconnecting from the frontend), the re
 | **Aggregated** | ✅ | ✅ |
 | **Disaggregated** | ✅ | ✅ |
 
-For more details, see the [Request Cancellation Architecture](../../fault-tolerance/request-cancellation.md) documentation.
+For more details, see the [Request Cancellation Architecture](../../design-docs/request-cancellation.md) documentation.
 
 ## Multiple Choices (`n`)
 
@@ -55,7 +70,7 @@ Dynamo with the TensorRT-LLM backend supports multimodal models, enabling you to
 
 ## Diffusion Support (Experimental)
 
-Dynamo supports video and image generation using diffusion models through TensorRT-LLM. For requirements, supported models, API usage, and configuration options, see the [Diffusion Guide](./trtllm-diffusion.md).
+Dynamo supports video and image generation using diffusion models through TensorRT-LLM. For requirements, supported models, API usage, and configuration options, see the [Text-to-Image](../../features/diffusion/text-to-image/README.md#tensorrt-llm) and [Text-to-Video](../../features/diffusion/text-to-video/README.md#tensorrt-llm) guides.
 
 ## Logits Processing
 

@@ -5,8 +5,8 @@ title: Writing Unified Backends
 subtitle: Choose Python or Rust for Dynamo's shared backend contract
 ---
 
-Dynamo's unified backend path lets custom engines implement the same lifecycle
-contract used by the built-in backends. The engine owns inference; Dynamo owns
+Dynamo's unified backend path lets custom engines implement Dynamo's shared
+backend lifecycle contract. The engine owns inference; Dynamo owns
 runtime registration, request serving, cancellation monitoring, signal handling,
 drain, and graceful shutdown.
 
@@ -41,15 +41,15 @@ Supported today:
 - structured backend errors
 - graceful shutdown and drain hooks
 
-Still use the lower-level Python worker path when you need features such as
-multimodal requests, LoRA adapter management, logprobs, guided decoding,
-engine-specific routes, custom request handling, or features that need direct
-control of the request payload.
+Still use the lower-level Python worker path when you need a feature the
+unified contract does not cover, a separate multimodal encode
+worker, engine-specific routes, custom request handling, or direct control of
+the request payload.
 
 After you implement the backend, package it into a runtime image with
 [Runtime Containers](custom-containers.md). For Kubernetes deployment, place the
 custom backend in a `DynamoGraphDeployment` and follow the
-[Deployment Overview](../kubernetes/model-deployment-guide.md).
+[Model Deployment](../getting-started/kubernetes-deployment.mdx).
 
 <Tabs>
 <Tab title="Python" language="python">
@@ -85,7 +85,7 @@ the git source) and imports `dynamo.common.backend`. The steps below
 assume you're starting a fresh package in your own repo.
 
 The reference example is the **sample engine** at
-[`sample_engine.py`](../../components/src/dynamo/common/backend/sample_engine.py)
+[`sample_engine.py`](https://github.com/ai-dynamo/dynamo/blob/main/components/src/dynamo/common/backend/sample_engine.py)
 — a complete, runnable implementation under 120 lines. Read it
 alongside this guide.
 
@@ -93,9 +93,9 @@ alongside this guide.
 
 - This guide — step-by-step walkthrough for someone starting a new
   backend from scratch.
-- [`LLMEngine` ABC docstrings](../../components/src/dynamo/common/backend/engine.py)
+- [`LLMEngine` ABC docstrings](https://github.com/ai-dynamo/dynamo/blob/main/components/src/dynamo/common/backend/engine.py)
   — authoritative method-by-method contract.
-- [Package README](../../components/src/dynamo/common/backend/README.md)
+- [Package README](https://github.com/ai-dynamo/dynamo/blob/main/components/src/dynamo/common/backend/README.md)
   — in-tree reference: `GenerateRequest` / `GenerateChunk` field
   definitions, per-engine cancellation cookbook (vLLM / SGLang /
   TRT-LLM), full `DynamoException` table, file index, and the
@@ -104,18 +104,16 @@ alongside this guide.
 ### Python feature gaps
 
 The unified backend is in beta. The summary below is the common
-contract — what every engine on the unified path gets — plus the
-gaps that apply to all three engines. Per-engine specifics (vLLM
-sleep/wake, SGLang diffusion, TRT-LLM custom logits processors,
-etc.) live in the
-[package README](../../components/src/dynamo/common/backend/README.md#feature-gaps).
+contract — what every engine on the unified interface gets — plus the
+gaps in the contract itself. Backend-specific details live in the
+[package README](https://github.com/ai-dynamo/dynamo/blob/main/components/src/dynamo/common/backend/README.md#feature-gaps).
 
 **Supported today**
 
 Lifecycle and runtime:
 - Aggregated token-in-token-out inference
 - Disaggregated serving (`agg` / `prefill` / `decode`) — KV transfer
-  uses NIXL across all three engines; SGLang exchanges a Dynamo-level
+  uses NIXL across supported engines; SGLang exchanges a Dynamo-level
   bootstrap address (host/port/room), vLLM and TRT-LLM use an
   engine-internal handshake
 - Model registration with discovery and endpoint types
@@ -125,6 +123,21 @@ Lifecycle and runtime:
 - `DynamoException` error chain wrapping
 - Finish reason normalization (handled by the Rust layer)
 - Engine control plumbing, with per-backend profiling, quiesce/resume, and supported weight-update controls
+- vLLM KV block clearing in aggregated, prefill, and decode modes through
+  `POST /engine/control/clear_kv_blocks` on the worker's system port. Send
+  `{}` as the JSON body. A successful reset clears both the prefix cache
+  and connector cache and returns
+  `{"status":"success","message":"KV cache cleared"}`. A rejected reset
+  returns HTTP 200 with
+  `{"status":"error","message":"KV cache reset failed"}`. An unavailable
+  engine returns `{"status":"error","message":"Engine is not running"}`;
+  exceptions return the same error shape with the exception text as the
+  message.
+  The direct control does not pause generation, drain work, or preempt
+  active requests. If blocks remain in use, wait for those requests to
+  finish and retry. The control is available even when prefix caching is
+  not explicitly enabled because the connector cache may still need a
+  reset.
 
 Observability:
 - Health-check canary via `health_check_payload()` (plus
@@ -147,11 +160,10 @@ Observability:
 
 Request handling:
 - Guided decoding — wired per-engine on the request side with
-  engine-specific coverage. vLLM (`StructuredOutputsParams`) and
-  TRT-LLM (`GuidedDecodingParams`) cover JSON schema / regex / grammar
-  / choice; SGLang (`_get_guided_decoding_params`) covers JSON schema
-  only — regex / grammar / choice are silently dropped today (see the
-  SGLang-specific gaps in the package README)
+  JSON schema, regex, grammar, and choice coverage. vLLM uses
+  `StructuredOutputsParams`, TRT-LLM uses `GuidedDecodingParams`, and
+  SGLang maps the constraints to `json_schema`, `regex`, and `ebnf`;
+  SGLang translates choices to an escaped regex alternation
 - Structural tag generation via `WorkerConfig.structural_tag_{mode,
   scope, schema}` and `serialize_structural_tag`
 - Custom Jinja chat templates via
@@ -160,20 +172,20 @@ Request handling:
 - Tool / reasoning parser configuration (`tool_call_parser`,
   `reasoning_parser`, `exclude_tools_when_tool_choice_none`)
 
-**Not yet on the unified path (common to all engines)**
+**Remaining Python unified-backend gaps**
 
 | Feature | What's missing |
 |---------|----------------|
 | Logprob response wire | Legacy handlers extract logprobs onto response chunks (vLLM `_extract_logprobs`, SGLang `_extract_logprobs` in `decode_handler`, TRT-LLM `_extract_logprobs` in `handler_base`); the unified `generate()` loops do not populate `log_probs` / `top_logprobs` / `cum_log_probs` on `GenerateChunk`. vLLM's `build_sampling_params` still passes `output_options.logprobs` to the engine on the unified path, so the engine computes them, but the values are dropped before they reach the chunk. SGLang and TRT-LLM unified `generate()` do not read `output_options.logprobs` at all. |
 | Text-in-text-out mode | Unified hardcodes `ModelInput.Tokens`; no engine-side tokenization or chat templating path |
-| Multimodal | Images / video / embeddings, NIXL embedding transfer, separate encode workers, `ENCODE` disaggregation role |
+| Multimodal parity | vLLM supports aggregated and prefill/decode image and video inference. SGLang and TRT-LLM multimodal execution, separate encode workers, and the `ENCODE` role are not yet available through their unified engines. |
 | Diffusion | Image (FLUX), video (Wan2.1), LLM diffusion (DLLM) workers; no diffusion engine, MediaOutput, or media scheduling on the unified path |
 | LoRA adapters | Dynamic load / unload / list, ModelDeploymentCard publishing, per-adapter serialization locks, per-request adapter threading on prefill |
 | Snapshot / checkpoint | CRIU-based engine state save/restore + identity reload |
 
-If you need one of these features today, keep that workload on the
-existing per-engine entry point (`dynamo.<backend>.main`) until the
-unified path catches up.
+If you need one of these features today, use the built-in engines' own
+entry points (`dynamo.<backend>`), which cover them outside the unified
+contract.
 
 ### Python: What you are building
 
@@ -394,7 +406,7 @@ request. Called concurrently for multiple in-flight requests.
 
 **Contract** (chunk shape is defined by the `GenerateChunk` TypedDict
 — see
-[Request / Response Types](../../components/src/dynamo/common/backend/README.md#request--response-types)
+[Request / Response Types](https://github.com/ai-dynamo/dynamo/blob/main/components/src/dynamo/common/backend/README.md#request--response-types)
 in the package README for the field reference):
 
 - Every chunk carries `token_ids` and `index` (use `0` for single
@@ -560,7 +572,7 @@ by the worker.
 
 Rust backends use the equivalent `LLMEngine::kv_event_sources()` trait method;
 see [Rust Step 4](#rust-step-4-implement-the-llmengine-trait) and the
-[`LLMEngine` trait](../../lib/backend-common/src/engine.rs).
+[`LLMEngine` trait](https://github.com/ai-dynamo/dynamo/blob/main/lib/backend-common/src/engine.rs).
 
 Use `ZmqSource` when the engine already emits Dynamo-compatible KV events on a
 ZMQ socket, as vLLM and SGLang do:
@@ -636,7 +648,7 @@ Pair this with the `[project.scripts]` entry from Step 1's
 **Errors**: the framework wraps non-`DynamoException` errors raised
 from `generate()` (or lifecycle methods) as `Unknown`. For typed
 error reporting, raise a `DynamoException` subclass directly from
-[`dynamo.llm.exceptions`](../../components/src/dynamo/common/backend/README.md#error-handling)
+[`dynamo.llm.exceptions`](https://github.com/ai-dynamo/dynamo/blob/main/components/src/dynamo/common/backend/README.md#error-handling)
 — it propagates unchanged through the Rust bridge:
 
 ```python
@@ -677,7 +689,7 @@ pip install -e ".[dev]"
 ```
 
 The sample engine has a unit-test
-[suite](../../components/src/dynamo/common/backend/tests/test_engine.py)
+[suite](https://github.com/ai-dynamo/dynamo/blob/main/components/src/dynamo/common/backend/tests/test_engine.py)
 that you can copy as a starting point. The shape of a useful test:
 
 ```python
@@ -778,7 +790,7 @@ the framework configures `tracing` from `DYN_LOG`.
 
 ### Python reference: sample engine
 
-[`sample_engine.py`](../../components/src/dynamo/common/backend/sample_engine.py)
+[`sample_engine.py`](https://github.com/ai-dynamo/dynamo/blob/main/components/src/dynamo/common/backend/sample_engine.py)
 is the canonical minimal reference. Run it as-is:
 
 ```bash
@@ -815,11 +827,11 @@ Before shipping:
 
 ### Python see also
 
-- [`LLMEngine` ABC](../../components/src/dynamo/common/backend/engine.py)
+- [`LLMEngine` ABC](https://github.com/ai-dynamo/dynamo/blob/main/components/src/dynamo/common/backend/engine.py)
   — authoritative contract.
-- [Package README](../../components/src/dynamo/common/backend/README.md)
+- [Package README](https://github.com/ai-dynamo/dynamo/blob/main/components/src/dynamo/common/backend/README.md)
   — feature gaps, error model, request/response contract.
-- [Sample engine](../../components/src/dynamo/common/backend/sample_engine.py)
+- [Sample engine](https://github.com/ai-dynamo/dynamo/blob/main/components/src/dynamo/common/backend/sample_engine.py)
   — example user guide.
 - Rust tab on this page — the Rust counterpart, same contract,
   lower-level.
@@ -882,11 +894,10 @@ guide.
 ### Rust feature gaps
 
 The unified backend is in beta. The summary below is the common
-contract — what every engine on the unified path gets, whether
+contract — what every engine on the unified interface gets, whether
 written in Rust directly or plugged in from Python via the PyO3
-`Worker` shim. Per-engine specifics (vLLM sleep/wake, SGLang
-diffusion, TRT-LLM custom logits processors, etc.) live in the
-[Python package README](../../components/src/dynamo/common/backend/README.md#feature-gaps).
+`Worker` shim. Backend-specific details live in the
+[Python package README](https://github.com/ai-dynamo/dynamo/blob/main/components/src/dynamo/common/backend/README.md#feature-gaps).
 
 **Supported today**
 
@@ -938,11 +949,10 @@ Observability:
 Request handling:
 - Guided decoding — request shape carries
   `SamplingOptions::guided_decoding` (`GuidedDecodingOptions`);
-  engine-side coverage on the existing Python-bridged engines is:
-  vLLM and TRT-LLM forward JSON schema / regex / grammar / choice;
-  SGLang forwards JSON schema only (regex / grammar / choice are
-  silently dropped today). A new Rust engine should forward whichever
-  variants its backend supports
+  vLLM, SGLang, and TRT-LLM forward JSON schema, regex, grammar, and
+  choice. SGLang translates grammar to `ebnf` and choices to an escaped
+  regex alternation. A new Rust engine should forward whichever variants
+  its backend supports
 - Structural tag generation — `WorkerConfig::structural_tag_{mode,
   scope, schema}` (typed enums)
 - Custom Jinja chat templates — `WorkerConfig::custom_jinja_template`
@@ -958,13 +968,14 @@ Request handling:
 |---------|----------------|
 | `cum_log_probs` response wire | Completion-side `log_probs` / `top_logprobs` are populated on the unified path for vLLM, SGLang, and TRT-LLM (shared helpers in `components/src/dynamo/common/backend/logprobs.py`). Prompt-side logprobs ride on the final chunk's `LLMEngineOutput.engine_data["prompt_logprobs"]` (consumed by `prompt_logprobs_from_engine_data` in the response builders). `cum_log_probs` is still not emitted. |
 | Text-in-text-out mode | `ModelInput::Text` is rejected at startup — `Tokens` only |
-| Multimodal | Images / video / embeddings, NIXL embedding transfer, separate encode workers; `ENCODE` disaggregation role |
+| Native Rust multimodal engines | The shared request fields are available, but native Rust engines do not yet implement image, video, embedding transfer, or the `ENCODE` role. |
 | Diffusion | Image (FLUX), video (Wan2.1), LLM diffusion (DLLM) workers; no diffusion engine, MediaOutput, or media scheduling on the unified path |
 | LoRA adapters | Dynamic load / unload / list, ModelDeploymentCard publishing, per-adapter serialization |
 | Snapshot / checkpoint | CRIU-based engine state save/restore + identity reload |
 
-If you need one of these features today, keep that workload on the
-existing per-engine entry point until the unified path catches up.
+If you need one of these features today, use the built-in engines' own
+entry points (`dynamo.<backend>`), which cover them outside the unified
+contract.
 
 ### Rust: What you are building
 
@@ -1286,7 +1297,7 @@ additionally exposes `notify_first_token()` for decode-mode requests
 — most engines can ignore it; the framework auto-fires on the first
 non-empty chunk.
 
-**Contract** (the [debug-mode validator](../../lib/backend-common/src/validate.rs)
+**Contract** (the [debug-mode validator](https://github.com/ai-dynamo/dynamo/blob/main/lib/backend-common/src/validate.rs)
 panics on violations):
 
 - Exactly one **terminal item** must be the last item yielded. A
@@ -1376,7 +1387,7 @@ async fn generate(
 2. During cleanup the stream sees both `ctx.stopped()` and
    `rx.recv() -> None` simultaneously; `biased` picks the clean
    cancellation path instead of erroring on a closed channel. The
-   mocker's [stream body](../../lib/backend-common/examples/mocker/src/engine.rs)
+   mocker's [stream body](https://github.com/ai-dynamo/dynamo/blob/main/lib/backend-common/examples/mocker/src/engine.rs)
    spells this out.
 
 If your engine doesn't have a receiver — e.g. you're computing tokens
@@ -1579,8 +1590,8 @@ event/request planes), the Dynamo Python frontend (HTTP → backend
 discovery), and your backend.
 
 The fastest path is to copy the **mocker example's
-[`docker-compose.yml`](../../lib/backend-common/examples/mocker/docker-compose.yml)
-and [`Dockerfile.frontend`](../../lib/backend-common/examples/mocker/Dockerfile.frontend)**,
+[`docker-compose.yml`](https://github.com/ai-dynamo/dynamo/blob/main/lib/backend-common/examples/mocker/docker-compose.yml)
+and [`Dockerfile.frontend`](https://github.com/ai-dynamo/dynamo/blob/main/lib/backend-common/examples/mocker/Dockerfile.frontend)**,
 swap in your image, and run `docker compose up --build`. That brings
 up NATS + etcd + the Python frontend (built from the dynamo workspace
 at the same SHA as your backend) + your backend, all on one network.
@@ -1650,18 +1661,18 @@ Before shipping:
 
 ### Rust see also
 
-- [Crate README](../../lib/backend-common/README.md) — in-tree
+- [Crate README](https://github.com/ai-dynamo/dynamo/blob/main/lib/backend-common/README.md) — in-tree
   reference (architecture, file index, contracts at a glance).
-- [`LLMEngine` trait](../../lib/backend-common/src/engine.rs) — authoritative contract.
-- [Design notes](../../lib/backend-common/CLAUDE.md) — rationale and
+- [`LLMEngine` trait](https://github.com/ai-dynamo/dynamo/blob/main/lib/backend-common/src/engine.rs) — authoritative contract.
+- [Design notes](https://github.com/ai-dynamo/dynamo/blob/main/lib/backend-common/CLAUDE.md) — rationale and
   invariants.
-- [`Worker`](../../lib/backend-common/src/worker.rs) — runtime
+- [`Worker`](https://github.com/ai-dynamo/dynamo/blob/main/lib/backend-common/src/worker.rs) — runtime
   lifecycle internals (signal handling, graceful shutdown, model
   registration).
-- [Conformance kit](../../lib/backend-common/src/testing.rs) —
+- [Conformance kit](https://github.com/ai-dynamo/dynamo/blob/main/lib/backend-common/src/testing.rs) —
   `run_conformance`, `mock_context`, `cancelling_context`.
 - [Mocker backend](../backends/mocker_backend/README.md) — example user guide.
-- [Python sibling](../../components/src/dynamo/common/backend/README.md)
+- [Python sibling](https://github.com/ai-dynamo/dynamo/blob/main/components/src/dynamo/common/backend/README.md)
   — Python ABC layered over this crate.
 
 </Tab>

@@ -110,7 +110,7 @@ Prefer [Dynamo Recipes](https://github.com/ai-dynamo/dynamo/tree/main/recipes)
 when a recipe matches your model, backend, hardware, and serving mode. Recipes
 include tuned `deploy.yaml` manifests and, in many cases, matching `perf.yaml`
 benchmark jobs that you can run or adapt. If no recipe matches, start from the
-[Deployment Overview](../kubernetes/model-deployment-guide.md) or the backend
+[Model Deployment](../getting-started/kubernetes-deployment.mdx) or the backend
 examples in [examples/backends](https://github.com/ai-dynamo/dynamo/tree/main/examples/backends).
 
 ### Step 2: Port-Forward and Run a Single Benchmark
@@ -314,7 +314,7 @@ Server-side benchmarking runs directly within the Kubernetes cluster, eliminatin
 
 ## Prerequisites
 
-1. **Kubernetes cluster** with NVIDIA GPUs and Dynamo namespace setup (see [Dynamo Kubernetes Platform docs](../kubernetes/README.md))
+1. **Kubernetes cluster** with NVIDIA GPUs and Dynamo namespace setup (see [Dynamo Kubernetes Platform docs](../kubernetes/quickstart.mdx))
 2. **Storage**: PersistentVolumeClaim configured with appropriate permissions (see [deploy/utils README](https://github.com/ai-dynamo/dynamo/blob/main/deploy/utils/README.md))
 3. **Docker image** containing AIPerf (Dynamo runtime images include it)
 
@@ -323,7 +323,7 @@ Server-side benchmarking runs directly within the Kubernetes cluster, eliminatin
 ### Step 1: Deploy Your DynamoGraphDeployment
 Deploy a `DynamoGraphDeployment` using a matching
 [Dynamo Recipe](https://github.com/ai-dynamo/dynamo/tree/main/recipes), the
-[Deployment Overview](../kubernetes/model-deployment-guide.md), or the backend
+[Model Deployment](../getting-started/kubernetes-deployment.mdx), or the backend
 examples in [examples/backends](https://github.com/ai-dynamo/dynamo/tree/main/examples/backends).
 Ensure it has a frontend service exposed and the model is fully loaded before
 running benchmarks — check pod logs or verify the health endpoint returns
@@ -427,9 +427,9 @@ For development and testing purposes, Dynamo provides DynoSim and the [mocker ba
 - **CI/CD pipelines** that need to validate infrastructure without model execution
 - **Benchmarking framework validation** to ensure your setup works before using real backends
 
-Mocker is the live simulated engine in DynoSim: it mimics the API and behavior of real backends (SGLang, TensorRT-LLM, vLLM) but generates mock responses instead of running actual inference. Use [DynoSim Runs](../dynosim/runs.md) for one simulated workload/config trial and [DynoSim Sweeps](../dynosim/sweeps.md) when you want to search across many candidate configurations.
+Mocker is the live simulated engine in DynoSim: it mimics the API and behavior of real backends (SGLang, TensorRT-LLM, vLLM) but generates mock responses instead of running actual inference. Use [DynoSim Runs](../dynosim/runs.mdx) for one simulated workload/config trial and [DynoSim Sweeps](../dynosim/sweeps.mdx) when you want to search across many candidate configurations.
 
-See [Live Simulation with Mocker](../dynosim/mocker.md) for usage examples and configuration options.
+See [Live Simulation with Mocker](../dynosim/mocker.mdx) for usage examples and configuration options.
 
 ---
 
@@ -439,7 +439,7 @@ AIPerf has many capabilities beyond basic profiling. Here are some particularly 
 
 | Feature | Description | Docs |
 |---------|-------------|------|
-| Priority Validation | Send per-request `nvext.agent_hints.priority` values and verify router or backend priority behavior under contention | [Priority Scheduling](../components/router/priority-scheduling.md#verify-priority-is-working) |
+| Priority Validation | Send per-request `nvext.agent_hints.priority` values and verify router or backend priority behavior under contention | [Priority Scheduling](../agents/priority-scheduling.md#verify-priority-is-working) |
 | Trace Replay | Replay production traces for deterministic benchmarking | [Trace Replay](https://github.com/ai-dynamo/aiperf/blob/main/docs/benchmark-modes/trace-replay.md) |
 | Arrival Patterns | Poisson, constant, gamma traffic distributions | [Arrival Patterns](https://github.com/ai-dynamo/aiperf/blob/main/docs/tutorials/arrival-patterns.md) |
 | Gradual Ramping | Smooth ramp-up of concurrency and request rate | [Ramping](https://github.com/ai-dynamo/aiperf/blob/main/docs/tutorials/ramping.md) |

@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # Dynamo Local Resource Monitor
 
-[`dynamo_local_resource_monitor.py`](../../dev/observability/dynamo_local_resource_monitor.py) is a Dynamo-specific resource monitor that tracks per-process resource usage (VRAM, GPU utilization, PCIe bandwidth, CPU, disk I/O, network I/O) for Dynamo inference processes — labeled by model name, process identity, and PID. It always exposes Prometheus metrics at `/metrics`; when the dashboard dependencies are installed, the same endpoint also serves a WebSocket dashboard at `/`.
+[`dynamo_local_resource_monitor.py`](../../../dev/observability/dynamo_local_resource_monitor.py) is a Dynamo-specific resource monitor that tracks per-process resource usage (VRAM, GPU utilization, PCIe bandwidth, CPU, disk I/O, network I/O) for Dynamo inference processes — labeled by model name, process identity, and PID. It always exposes Prometheus metrics at `/metrics`; when the dashboard dependencies are installed, the same endpoint also serves a WebSocket dashboard at `/`.
 
 ## Why this and not the existing observability tools?
 
@@ -17,7 +17,7 @@ Design context lives in [DEP #9065](https://github.com/ai-dynamo/dynamo/issues/9
 - **Nsight Systems** is a 980 MB profile-then-analyze tool — right for one-off deep dives, wrong for an always-on CI signal.
 - **aiperf** is client-side load + latency, not server-side per-process telemetry, and runs *after* the engine is up.
 
-This monitor samples at 200 ms (PCIe internally at 10/s), groups subprocesses into one logical worker per engine, and labels each per-engine PID with framework + model + test name (e.g. `VLLM::EngineCore, Qwen3-0.6B, test_serve_deployment[aggregated_unified]`) — so Grafana renders parallel engines bin-packed onto one GPU as separate side-by-side series instead of one summed line. That's what makes flaky one-of-N-tests failures diagnosable.
+This monitor samples at 200 ms (PCIe internally at 10/s), groups subprocesses into one logical worker per engine, and labels each per-engine PID with framework + model + test name (e.g. `VLLM::EngineCore, Qwen3-0.6B, test_serve_deployment[aggregated]`) — so Grafana renders parallel engines bin-packed onto one GPU as separate side-by-side series instead of one summed line. That's what makes flaky one-of-N-tests failures diagnosable.
 
 ## Prometheus + Grafana
 

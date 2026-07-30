@@ -167,10 +167,15 @@ The profiler enforces these rules at startup:
 | `enable_throughput_scaling: true` + `pre_deployment_sweeping_mode: none` (or unset) | Allowed for planner. The perf model starts from native AIC when available or waits for enough live FPM observations. |
 | `enable_throughput_scaling: true` + `pre_deployment_sweeping_mode: rapid` + AIC unsupported | Allowed for planner. The Rust shim falls back to observed-FPM regression when native AIC estimates are unavailable. |
 | `e2eLatency` provided together with an explicitly-set `ttft` or `itl` | Rejected by SLA validator. Provide only `e2eLatency`; `ttft` and `itl` do not need to be explicitly nulled. |
-| SLA unachievable | Warning logged, SLA updated to best achievable value. |
+| All AIC rapid experiments return no SLA-feasible configuration | Profiling fails and no DGD is generated. SLA targets are not relaxed automatically. |
+| A real-GPU thorough sweep returns results, but none meet the SLA | Warning logged and the closest measured configuration is selected. |
 | Load-match needs more GPUs than available | Warning logged. |
 
 ## Support Matrix
+
+Check the [AIConfigurator support matrix](https://ai-dynamo.github.io/aiconfigurator/support-matrix/)
+for current model, GPU, backend, generator, and performance-model coverage. The tables below summarize
+the Profiler's backend and parallelization support.
 
 | Backend | Dense Models | MoE Models |
 |---------|-------------|------------|
@@ -198,14 +203,31 @@ The recommended deployment method is through DGDRs. See [Profiler Examples](prof
 
 #### Container Images
 
-Each DGDR requires a container image for profiling and deployment:
-
-- **`image`** (Optional): Container image for the profiling job. Must contain the profiler code and dependencies.
+The DGDR `image` field selects the container image for the profiling job. The
+image must contain the profiler code and dependencies. If `image` is omitted,
+the operator defaults it to
+`nvcr.io/nvidia/ai-dynamo/dynamo-planner:<operatorVersion>`.
 
 ```yaml
 spec:
   image: "nvcr.io/nvidia/ai-dynamo/dynamo-planner:1.2.1"  # dynamo-frontend for Dynamo < 1.1.0
 ```
+
+<Note>
+The DGDR-level `spec.runtimeVersionOverride` supplies a default for generated
+DGD components. The operator applies it after processing profiler output and
+DGD overrides only when a component does not already set an explicit value,
+including when a profiler based on Dynamo 1.3.0 or earlier discards the field
+while parsing the DGDR. Set the override when the effective generated runtime
+images do not use tags that identify their Dynamo runtime versions.
+The profiler also applies the field when its output is consumed directly,
+outside the operator-managed DGDR workflow. For DGDR-managed deployments, an
+explicit component value in `spec.overrides.dgd` takes precedence over the
+DGDR-level default.
+
+[Profiler Image Version Compatibility](../../kubernetes/dgdr-reference.mdx#profiler-image-version-compatibility)
+for details.
+</Note>
 
 #### Quick Start: Deploy with DGDR
 
@@ -269,6 +291,33 @@ curl http://localhost:8000/v1/models
 DGDRs are **immutable**. To update SLAs or configuration, delete the existing DGDR and create a new one.
 </Note>
 
+### Local Runs with DGD Overrides
+
+The operator supplies `dgd-apply-overrides` to Kubernetes profiling jobs when
+`overrides.dgd` is present. For a local run, put the matching binary on `PATH`.
+From a Dynamo checkout with Go installed, build and install it with:
+
+```bash
+go -C deploy/operator install ./cmd/dgd-apply-overrides
+python -m dynamo.profiler --config /path/to/dgdr-spec.yaml
+```
+
+`go install` writes the binary to `GOBIN`, or to `$(go env GOPATH)/bin` when
+`GOBIN` is unset. Add that directory to `PATH` if needed. Alternatively, set
+`DYNAMO_DGD_APPLY_OVERRIDES_BIN` to the binary's absolute path. The profiler
+does not download the binary at runtime. Runs without `overrides.dgd` do not
+require the helper.
+
+Use a binary from the same Dynamo release as the profiler. The profiler checks
+the binary protocol before applying an override and rejects incompatible versions.
+For supported DGD versions and merge behavior, see
+[Generated DGD Overrides](../../kubernetes/dgdr-guide.md#generated-dgd-overrides).
+
+Registry credentials are namespace-scoped. The operator chart's
+`imagePullSecrets` pull the operator Pod only. A profiling Job that needs
+credentials for the operator image must receive them from its ServiceAccount or
+from `overrides.profilingJob.template.spec.imagePullSecrets` in the DGDR namespace.
+
 ## Profiling Method
 
 The profiler follows a 5-step process:
@@ -299,7 +348,8 @@ Profiles your model by creating real test deployments in Kubernetes and measurin
 - **GPU Requirements**: Full access to test different parallelization mappings
 - **Backends**: vLLM, SGLang, TensorRT-LLM
 
-AIPerf-based profiling is the default behavior. Use `searchStrategy: thorough` for comprehensive real-engine profiling:
+AIPerf-based profiling is the opt-in thorough strategy. Use
+`searchStrategy: thorough` for comprehensive real-engine profiling:
 
 ```yaml
 spec:
@@ -340,11 +390,13 @@ The operator automatically discovers GPU resources from cluster nodes, providing
 **Requirements:**
 - **Cluster-scoped operators** (recommended): Have node read permissions by default. GPU discovery works automatically.
 
-> **DEPRECATED:** The following applies only to namespace-scoped operators, which are deprecated and will be removed in a future release. Use cluster-wide mode for new deployments.
+<Warning>
+Namespace-restricted operators are only for development and testing. They are not supported for production.
+</Warning>
 
-- **Namespace-scoped operators** (deprecated): GPU discovery is enabled by default when installing via Helm — the chart provisions the required ClusterRole/ClusterRoleBinding automatically
+- **Namespace-restricted operators**: GPU discovery is enabled by default when installing with Helm. The chart provisions the required ClusterRole and ClusterRoleBinding.
 
-**For namespace-scoped operators (deprecated)**, GPU discovery is controlled by a Helm value:
+For namespace-restricted operators, control GPU discovery with a Helm value:
 
 ```bash
 # GPU discovery enabled (default) — Helm provisions read-only node access automatically
@@ -448,7 +500,7 @@ features:
     min_endpoint: 2                            # Minimum endpoints to maintain
     load_adjustment_interval_seconds: 5        # Load-scaling interval (seconds)
     throughput_adjustment_interval_seconds: 60 # Throughput-scaling interval (seconds)
-    load_predictor: linear                     # Load prediction method
+    load_predictor: arima                      # Load prediction method
 ```
 
 <Note>
@@ -492,7 +544,7 @@ Provide a base DGD config via the overrides section:
 ```yaml
 overrides:
   dgd:
-    apiVersion: nvidia.com/v1alpha1
+    apiVersion: nvidia.com/v1beta1
     kind: DynamoGraphDeployment
     metadata:
       name: my-dgd
@@ -500,7 +552,11 @@ overrides:
       # ... your base DGD spec
 ```
 
-The profiler uses the DGD config as a **base template**, then optimizes it based on your SLA targets.
+The override does not define or extend the profiler's candidate topology. With
+`searchStrategy: thorough`, the profiler merges it into each generated
+benchmark candidate before measurement and into the interpolation deployment.
+For every search strategy, the profiler also merges it into the final generated
+DGD.
 
 ## Integration
 
@@ -525,7 +581,7 @@ The Profiler generates interpolation data that the SLA Planner uses for autoscal
 When using DGDR, the Dynamo Operator:
 
 1. Creates profiling jobs automatically
-2. Stores profiler output in ConfigMaps (`dgdr-output-<name>` and, when thorough profile data is needed, `planner-profile-data`)
+2. Stores profiler output in ConfigMaps (`dgdr-output-<name>` and, when thorough profile data is needed, `planner-profile-data-XXXX`, where the suffix is generated)
 3. Generates optimized DGD configurations
 4. Deploys the DGD with SLA Planner integration
 
@@ -595,26 +651,28 @@ spec:
   autoApply: true
 ```
 
-With thorough sweeping, profiling still runs against the real backend to collect performance data and stores it in `planner-profile-data`. With rapid sweeping, the mocker uses AIC performance-model flags instead of a profile-data ConfigMap. Useful for large-scale experiments, testing Planner behavior, and validating configurations.
+With thorough sweeping, profiling still runs against the real backend to collect performance data and, when a consumer needs it, stores it in a generated `planner-profile-data-XXXX` ConfigMap. With rapid sweeping, the mocker uses AIC performance-model flags instead of a profile-data ConfigMap. Useful for large-scale experiments, testing Planner behavior, and validating configurations.
 
 ### Accessing Profiling Artifacts
 
 By default, profiler output is stored in ConfigMaps. For detailed artifacts (plots, logs, raw data), attach a PVC via overrides:
 
 ```yaml
-overrides:
-  profilingJob:
-    template:
-      spec:
-        volumes:
-        - name: profiling-output
-          persistentVolumeClaim:
-            claimName: "dynamo-pvc"
+spec:
+  overrides:
+    profilingJob:
+      template:
+        spec:
+          containers: []    # required placeholder; inherits operator containers
+          volumes:
+            - name: profiling-output
+              persistentVolumeClaim:
+                claimName: dynamo-pvc
 ```
 
 **ConfigMaps:**
 - `dgdr-output-<name>`: Generated DGD configuration
-- `planner-profile-data`: Profiling data for Planner and mocker consumers (JSON). Only created for thorough sweeping when profile data is needed.
+- `planner-profile-data-XXXX`: Profiling data for Planner and mocker consumers (JSON), with a generated suffix. Only created for thorough sweeping when profile data is needed.
 
 **PVC artifacts (optional):**
 - Performance plots (PNGs)
@@ -645,9 +703,11 @@ The profiler generates plots to visualize performance data:
 - `selected_decode_interpolation/decode_itl_interplation.png`: ITL vs KV usage and context length
 - `selected_decode_interpolation/decode_throughput_interpolation.png`: Throughput vs KV usage and context length
 
-## Runtime Profiling (SGLang)
+## Runtime Profiling
 
-SGLang workers expose profiling endpoints for runtime performance analysis:
+SGLang and vLLM workers expose profiling endpoints for runtime performance
+analysis. SGLang accepts `output_dir`, `start_step`, and `num_steps`; vLLM
+accepts the optional `profile_prefix` field instead:
 
 ```bash
 # Start profiling
@@ -661,13 +721,27 @@ curl -X POST http://localhost:9090/engine/control/start_profile \
 curl -X POST http://localhost:9090/engine/control/stop_profile
 ```
 
+For vLLM, start profiling with a prefix:
+
+```bash
+curl -X POST http://localhost:9090/engine/control/start_profile \
+  -H "Content-Type: application/json" \
+  -d '{"profile_prefix": "dynamo-profile"}'
+```
+
 View traces using Chrome's `chrome://tracing`, [Perfetto UI](https://ui.perfetto.dev/), or TensorBoard.
 
 ## Troubleshooting
 
 ### SLA Cannot Be Met
 
-The profiler logs a warning and updates the SLA to the best achievable value. To improve results:
+The behavior depends on the search strategy:
+
+- With `searchStrategy: rapid`, profiling fails when all AIC experiments return no SLA-feasible configuration. The profiler does not relax the SLA or generate a DGD.
+- With `searchStrategy: thorough`, the profiler selects the closest measured configuration and logs a warning when the sweep produces results but none meet the SLA. Profiling fails if the sweep produces no usable results.
+
+To improve results:
+
 - Relax SLA targets (increase TTFT/ITL)
 - Add more GPU resources
 - Try a different backend

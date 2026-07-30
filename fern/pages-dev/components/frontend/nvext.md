@@ -36,6 +36,7 @@ Include `nvext` as a top-level field alongside standard OpenAI-compatible fields
 | `backend_instance_id` | `u64` | `None` | Router | Routes the request to a specific backend instance. |
 | `token_data` | `u32[]` | `None` | Preprocessor | Pre-tokenized prompt tokens. When provided with `backend_instance_id`, tokenization is skipped. |
 | `max_thinking_tokens` | `u32` | `None` | Backend | Maximum thinking tokens allowed (passed through to backends). |
+| `cache_salt` | `string` | `None` | Router / supported backends | Namespaces Dynamo KV routing. vLLM and TensorRT-LLM also isolate backend KV-cache reuse; see [Backend support](#backend-support). This is the recommended cache-isolation input. |
 | `extra_fields` | `string[]` | `None` | Response builder | Fields to include in the response `nvext`. Supported: `"worker_id"`, `"timing"`, `"routed_experts"`, `"engine_data"`, `"stop_reason"`. |
 | `prefill_worker_id` | `u64` | `None` | Router | Routes the request to a specific prefill worker (disaggregated serving). |
 | `decode_worker_id` | `u64` | `None` | Router | Routes the request to a specific decode worker (disaggregated serving). |
@@ -64,6 +65,7 @@ Routing fields can also be set via HTTP headers, which take priority over `nvext
 | `x-dynamo-prefill-instance-id` | `prefill_worker_id` |
 | `x-dynamo-dp-rank` | `dp_rank` |
 | `x-dynamo-prefill-dp-rank` | `prefill_dp_rank` |
+| `x-tenant-id` | `cache_salt` |
 
 <Warning>
 The unprefixed forms (`x-worker-instance-id`, `x-prefill-instance-id`, `x-dp-rank`,
@@ -71,8 +73,47 @@ The unprefixed forms (`x-worker-instance-id`, `x-prefill-instance-id`, `x-dp-ran
 deprecation. Use the `x-dynamo-*` headers for new integrations.
 </Warning>
 
+### Cache salt and tenant isolation
+
+Use `nvext.cache_salt` to namespace KV-cache routing. Dynamo also forwards the salt to supported
+backend engines so identical prompts in different namespaces cannot reuse the same backend
+KV-cache entries:
+
+```json
+{
+    "model": "my-model",
+    "messages": [{"role": "user", "content": "Hello"}],
+    "nvext": {
+        "cache_salt": "tenant-a"
+    }
+}
+```
+
+#### Backend support
+
+| Backend | Support | Behavior |
+|---------|---------|----------|
+| vLLM | Supported | Router matching and backend KV-cache reuse are isolated by salt. |
+| TensorRT-LLM | Supported | Router matching and backend KV-cache reuse are isolated by salt. |
+| SGLang | Not supported end to end | Dynamo request hashes are namespaced, but the embedded SGLang engine does not receive the salt. SGLang KV events and radix-cache reuse remain unsalted. Do not rely on `cache_salt` for tenant cache isolation with SGLang. |
+
+Dynamo accepts three inputs, in descending precedence:
+
+1. The non-empty `x-tenant-id` HTTP header, intended for gateway-controlled tenant identity.
+2. The recommended `nvext.cache_salt` request field.
+3. The compatibility top-level `cache_salt` field on chat and completion requests.
+
+Empty strings are treated as absent. In particular, an empty `nvext.cache_salt` falls back to a
+non-empty top-level compatibility value. Requests without a salt retain the unsalted hashing and
+cache-reuse behavior.
+
+`DYN_ENABLE_FRONTEND_NVEXT=false` disables both the `nvext` form and routing-header overrides,
+including `x-tenant-id`. The top-level backend-compatibility field is not part of the NvExt
+protocol. Cache salt is an isolation key, not an authentication or authorization mechanism;
+gateways must still authenticate the tenant identity they place in `x-tenant-id`.
+
 Session identity is header-only. Use the coding-agent headers or Dynamo
-session headers described in [Session IDs](../../agents/session-ids.md);
+session headers described in [Session IDs](../../agents/session-ids.mdx);
 `nvext` does not accept session identity fields.
 
 When session affinity is enabled with `--router-session-affinity-ttl-secs`, the
@@ -102,7 +143,7 @@ important" across Dynamo.
 When `--router-queue-threshold` is set and the queue is active, higher-priority requests are shifted earlier in the router queue. Once dispatched, Dynamo forwards the same semantic priority to the backend engine for queue ordering, preemption, and KV cache eviction. Dynamo normalizes backend-specific polarity internally, including vLLM's lower-is-higher convention.
 
 For layer-by-layer behavior and backend requirements, see
-[Priority Scheduling](../router/priority-scheduling.md).
+[Priority Scheduling](../../agents/priority-scheduling.md).
 
 ```json
 {
@@ -227,7 +268,7 @@ When the client requests response metadata via `extra_fields`, the response incl
 |----------|-------------|
 | [Frontend Guide](frontend-guide.md) | KServe gRPC configuration and integration |
 | [Configuration and Tuning](../router/router-configuration.md) | Full router configuration and CLI arguments |
-| [Session IDs](../../agents/session-ids.md) | Passive session identity |
+| [Session IDs](../../agents/session-ids.mdx) | Passive session identity |
 | [Agent Tracing](../../agents/agent-tracing.md) | JSONL request traces, inferred tool-call metadata, and harness tool-event ingestion |
 | [Agent Hints](../../agents/agent-hints.md) | Per-request serving hints for routing, scheduling, and cache behavior |
 | [SGLang for Agentic Workloads](../../backends/sglang/agents.md) | SGLang engine flags for priority scheduling and KV eviction policies |
