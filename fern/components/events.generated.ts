@@ -20,7 +20,34 @@ export interface DynamoEvent {
   addUrl: string;
 }
 
-export const UPCOMING_EVENTS: DynamoEvent[] = [];
+export const UPCOMING_EVENTS: DynamoEvent[] = [
+  {
+    "title": "Dynamo SIG Deploy",
+    "start": "2026-11-03T16:00:00.000Z",
+    "month": "Nov",
+    "day": "3",
+    "year": "2026",
+    "dateLabel": "Tue, Nov 3, 2026",
+    "timeLabel": "8:00 AM",
+    "isPast": false,
+    "location": null,
+    "locationUrl": null,
+    "addUrl": "https://calendar.google.com/calendar/render?action=TEMPLATE&text=Dynamo+SIG+Deploy&dates=20261103T160000Z%2F20261103T170000Z&details=Join+with+Google+Meet%3A+https%3A%2F%2Fmeet.google.com%2Fmer-jrnu-mry%0AOr+dial%3A+%28DE%29+%2B49+40+8081618610+PIN%3A+612378808%23%0AMore+phone+numbers%3A+https%3A%2F%2Ftel.meet%2Fmer-jrnu-mry%3Fpin%3D2635519655187%26hs%3D7%0A%0ALearn+more+about+Meet+at%3A+https%3A%2F%2Fsupport.google.com%2Fa%2Fusers%2Fanswer%2F9282720"
+  },
+  {
+    "title": "SIG Engines — Biweekly Sync",
+    "start": "2026-11-13T01:00:00.000Z",
+    "month": "Nov",
+    "day": "12",
+    "year": "2026",
+    "dateLabel": "Thu, Nov 12, 2026",
+    "timeLabel": "5:00 PM",
+    "isPast": false,
+    "location": null,
+    "locationUrl": null,
+    "addUrl": "https://calendar.google.com/calendar/render?action=TEMPLATE&text=SIG+Engines+%E2%80%94+Biweekly+Sync&dates=20261113T010000Z%2F20261113T020000Z&details=Join+with+Google+Meet%3A+https%3A%2F%2Fmeet.google.com%2Fhha-vzes-szx%0AOr+dial%3A+%28US%29+%2B1+724-505-2767+PIN%3A+501573420%23%0AMore+phone+numbers%3A+https%3A%2F%2Ftel.meet%2Fhha-vzes-szx%3Fpin%3D9222789232381%26hs%3D7%0A%0ALearn+more+about+Meet+at%3A+https%3A%2F%2Fsupport.google.com%2Fa%2Fusers%2Fanswer%2F9282720"
+  }
+];
 
 export const PAST_EVENTS: DynamoEvent[] = [
   {
